@@ -2067,8 +2067,8 @@ public final class AbyssCrateFabric implements ModInitializer {
 
     private static void openBattleInvitation(ServerPlayer target, String challengerName, String crate) {
         SimpleContainer view = new SimpleContainer(27);
-        view.setItem(11, button(Items.LIME_WOOL, "ACCEPT " + crate + " vs " + challengerName));
-        view.setItem(15, button(Items.RED_WOOL, "DENY"));
+        view.setItem(11, button(Items.EMERALD, "ACCEPT " + crate + " vs " + challengerName));
+        view.setItem(15, button(Items.REDSTONE, "DENY"));
         target.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
                 if (slot >= 0 && slot < 27) {
@@ -2130,15 +2130,15 @@ public final class AbyssCrateFabric implements ModInitializer {
         ItemStack prize2 = new ItemStack(second.item(), second.count());
         winner.getInventory().add(prize1);
         winner.getInventory().add(prize2);
-        recordOpening(challenger, crate, first, first.item().getName().getString());
-        recordOpening(target, crate, second, second.item().getName().getString());
+        recordOpening(challenger, crate, first, new ItemStack(first.item()).getHoverName().getString());
+        recordOpening(target, crate, second, new ItemStack(second.item()).getHoverName().getString());
         awardMilestones(challenger);
         awardMilestones(target);
         challenger.closeContainer(); target.closeContainer();
         String result = "[AbyssCrate] " + challenger.getName().getString() + " (" + first.weight() + " weight) vs "
             + target.getName().getString() + " (" + second.weight() + " weight). WINNER: " + winner.getName().getString()
-            + "! Won " + first.count() + "x " + first.item().getName().getString() + " + "
-            + second.count() + "x " + second.item().getName().getString() + ". Both earned +1 milestone point.";
+            + "! Won " + first.count() + "x " + new ItemStack(first.item()).getHoverName().getString() + " + "
+            + second.count() + "x " + new ItemStack(second.item()).getHoverName().getString() + ". Both earned +1 milestone point.";
         challenger.sendSystemMessage(Component.literal(result));
         target.sendSystemMessage(Component.literal(result));
         openBattleResult(challenger, target.getName().getString(), crate, first, second, challengerWins);
@@ -2150,9 +2150,9 @@ public final class AbyssCrateFabric implements ModInitializer {
                                          RewardChoice own, RewardChoice rival, boolean won) {
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(11, button(own.item(), "YOUR DROP: " + own.count() + "x "
-            + own.item().getName().getString() + " | Weight: " + own.weight()));
+            + new ItemStack(own.item()).getHoverName().getString() + " | Weight: " + own.weight()));
         view.setItem(15, button(rival.item(), "OPPONENT DROP: " + rival.count() + "x "
-            + rival.item().getName().getString() + " | Weight: " + rival.weight()));
+            + new ItemStack(rival.item()).getHoverName().getString() + " | Weight: " + rival.weight()));
         view.setItem(4, button(won ? Items.NETHER_STAR : Items.BARRIER,
             (won ? "VICTORY! Both rewards are yours" : "DEFEAT! Opponent won both rewards") + " | +1 Milestone"));
         view.setItem(22, button(Items.BOOK, "Crate: " + crate + " | Opponent: " + opponent));
