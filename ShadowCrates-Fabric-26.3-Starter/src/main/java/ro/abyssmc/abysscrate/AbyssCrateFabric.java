@@ -62,6 +62,9 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Path STATS_FILE = STATS_DIR.resolve("openings.properties");
     private static final Path HISTORY_FILE = STATS_DIR.resolve("history.properties");
     private static final Properties STATS = new Properties();
+    // 3S.1: One point for every successfully completed crate opening.
+    private static final Path MILESTONES_FILE = Path.of("config", "AbyssCrate", "milestones.properties");
+    private static final Properties MILESTONES = new Properties();
     private static final Properties HISTORY = new Properties();
     // 3R.5: Two independently positioned, persistent live leaderboard holograms.
     private static final Path TOP_HOLOGRAMS_FILE = Path.of("config", "AbyssCrate", "leaderboard-holograms.properties");
@@ -126,6 +129,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadHolograms();
             loadKeys();
             loadStatistics();
+            loadMilestones();
             loadTopHolograms();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
@@ -273,6 +277,35 @@ public final class AbyssCrateFabric implements ModInitializer {
                     .then(Commands.literal("set").executes(ctx -> setTopHologram(ctx.getSource().getPlayerOrException(), "wins")))
                     .then(Commands.literal("remove").executes(ctx -> removeTopHologram(ctx.getSource().getPlayerOrException(), "wins")))
                     .then(Commands.literal("refresh").executes(ctx -> { refreshTopHolograms(ctx.getSource().getServer()); return 1; })))
+                .then(Commands.literal("milestones")
+                    .executes(ctx -> { openMilestones(ctx.getSource().getPlayerOrException()); return 1; }))
+                .then(Commands.literal("milestoneadmin")
+                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .executes(ctx -> { openMilestoneAdmin(ctx.getSource().getPlayerOrException()); return 1; })
+                    .then(Commands.literal("set")
+                        .then(Commands.argument("points", IntegerArgumentType.integer(1))
+                            .then(Commands.argument("command", StringArgumentType.greedyString())
+                                .executes(ctx -> {
+                                    int points = IntegerArgumentType.getInteger(ctx, "points");
+                                    String command = StringArgumentType.getString(ctx, "command");
+                                    MILESTONES.setProperty("reward." + points, command);
+                                    saveMilestones();
+                                    ctx.getSource().sendSuccess(() -> Component.literal("Milestone " + points + " configurat."), false);
+                                    return 1;
+                                }))))
+                    .then(Commands.literal("remove")
+                        .then(Commands.argument("points", IntegerArgumentType.integer(1))
+                            .executes(ctx -> {
+                                int points = IntegerArgumentType.getInteger(ctx, "points");
+                                MILESTONES.remove("reward." + points);
+                                saveMilestones();
+                                ctx.getSource().sendSuccess(() -> Component.literal("Milestone " + points + " eliminat."), false);
+                                return 1;
+                            }))))
+                    .then(Commands.literal("reload").executes(ctx -> {
+                        try { loadMilestones(); return 1; }
+                        catch (IOException ex) { ctx.getSource().sendFailure(Component.literal(ex.getMessage())); return 0; }
+                    })))
                 .then(Commands.literal("adminstats")
                     .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
                     .executes(ctx -> { openAdminStatistics(ctx.getSource().getPlayerOrException()); return 1; })));
@@ -494,6 +527,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadSettings();
             loadHolograms();
             loadKeys();
+                        loadMilestones();
                         hologramRefreshNeeded = true;
                         reply(ctx.getSource(), "reloaded", "");
                         return 1;
@@ -536,6 +570,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(14, button(Items.COMPARATOR, "Change Chance - select reward"));
         view.setItem(16, button(Items.COMPARATOR, "Crate Settings"));
         view.setItem(20, button(Items.TRIPWIRE_HOOK, "Custom Key Editor"));
+        view.setItem(24, button(Items.NETHER_STAR, "Milestone Rewards"));
         view.setItem(22, button(Items.BARRIER, "Close"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
@@ -544,6 +579,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     else if (slot == 12 || slot == 14) openRewardsEditor(admin, crate, 0);
                     else if (slot == 16) openCrateSettings(admin, crate);
                     else if (slot == 20) openKeyEditor(admin, crate);
+                    else if (slot == 24) openMilestoneAdmin(admin);
                     else if (slot == 22) admin.closeContainer();
                     return;
                 }
@@ -1486,6 +1522,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         }
         player.getInventory().getItem(keySlot).shrink(1);
         recordOpening(player, session.crate, session.prize, displayName);
+        awardMilestones(player);
         playCrateEffect(player, session.crate, "win");
         String rarity = rewardRarity(session.crate, session.prize.id());
         finalOpeningBurst(player, session, rarity);
@@ -1677,6 +1714,107 @@ public final class AbyssCrateFabric implements ModInitializer {
         HISTORY.setProperty(id + ".0", System.currentTimeMillis() + "|" + crate + "|" + rarity + "|" + prize.count() + "|" + safeName);
         HISTORY.setProperty(id + ".count", Integer.toString(Math.min(MAX_HISTORY, size + 1)));
         try { persistStatistics(); } catch (IOException ex) { System.err.println("[AbyssCrate] Cannot save statistics: " + ex.getMessage()); }
+    }
+
+    // 3S.1: Existing player.total statistics are the single source of truth.
+    // Every crate type contributes exactly one point; rewards do not consume points.
+    private static synchronized void loadMilestones() throws IOException {
+        Files.createDirectories(DIR);
+        if (!Files.exists(MILESTONES_FILE)) {
+            MILESTONES.clear();
+            MILESTONES.setProperty("enabled", "true");
+            MILESTONES.setProperty("reward.10", "give {player} minecraft:emerald 3");
+            MILESTONES.setProperty("reward.50", "give {player} minecraft:diamond 3");
+            MILESTONES.setProperty("reward.100", "give {player} minecraft:nether_star 1");
+            saveMilestones();
+        }
+        MILESTONES.clear();
+        try (InputStream in = Files.newInputStream(MILESTONES_FILE)) { MILESTONES.load(in); }
+    }
+
+    private static synchronized void saveMilestones() {
+        try {
+            Files.createDirectories(DIR);
+            try (OutputStream out = Files.newOutputStream(MILESTONES_FILE)) {
+                MILESTONES.store(out, "AbyssCrate 3S.1 milestones: reward.<points>=console command with {player}");
+            }
+        } catch (IOException ex) {
+            System.err.println("[AbyssCrate] Cannot save milestones: " + ex.getMessage());
+        }
+    }
+
+    private static List<Integer> milestoneThresholds() {
+        List<Integer> thresholds = new ArrayList<>();
+        for (String key : MILESTONES.stringPropertyNames()) {
+            if (!key.startsWith("reward.")) continue;
+            try {
+                int n = Integer.parseInt(key.substring(7));
+                if (n > 0) thresholds.add(n);
+            } catch (NumberFormatException ignored) {}
+        }
+        thresholds.sort(Integer::compareTo);
+        return thresholds;
+    }
+
+    private static synchronized void awardMilestones(ServerPlayer player) {
+        if (!Boolean.parseBoolean(MILESTONES.getProperty("enabled", "true"))) return;
+        String id = player.getUUID().toString();
+        long points = stat("player." + id + ".total");
+        for (int threshold : milestoneThresholds()) {
+            if (points < threshold) continue;
+            String claimed = "milestone." + threshold;
+            if ("true".equals(STATS.getProperty("player." + id + "." + claimed))) continue;
+            String command = MILESTONES.getProperty("reward." + threshold, "").trim();
+            if (command.isEmpty()) continue;
+            // Persist claim before running reward command to avoid duplicate rewards on retries.
+            STATS.setProperty("player." + id + "." + claimed, "true");
+            try { persistStatistics(); }
+            catch (IOException ex) {
+                STATS.remove("player." + id + "." + claimed);
+                System.err.println("[AbyssCrate] Cannot persist milestone claim: " + ex.getMessage());
+                continue;
+            }
+            try {
+                String expanded = command.replace("{player}", player.getName().getString());
+                player.level().getServer().getCommands().performPrefixedCommand(
+                    player.level().getServer().createCommandSourceStack().withSuppressedOutput(), expanded);
+                player.sendSystemMessage(colored("&a✦ Milestone de &e" + threshold + " &apuncte atins! Recompensa acordata."));
+            } catch (Exception ex) {
+                System.err.println("[AbyssCrate] Milestone reward command failed: " + ex.getMessage());
+            }
+        }
+    }
+
+    private static void openMilestones(ServerPlayer player) {
+        String id = player.getUUID().toString();
+        long points = stat("player." + id + ".total");
+        SimpleContainer view = new SimpleContainer(54);
+        view.setItem(4, button(Items.NETHER_STAR, "Milestone Points: " + points));
+        List<Integer> thresholds = milestoneThresholds();
+        for (int i = 0; i < Math.min(45, thresholds.size()); i++) {
+            int n = thresholds.get(i);
+            boolean claimed = "true".equals(STATS.getProperty("player." + id + ".milestone." + n));
+            view.setItem(i + 9, button(claimed ? Items.EMERALD : points >= n ? Items.GOLD_INGOT : Items.PAPER,
+                n + " points | " + (claimed ? "Claimed" : points >= n ? "Awaiting next opening" : points + "/" + n)));
+        }
+        view.setItem(49, button(Items.BARRIER, "Close"));
+        showStatsMenu(player, "AbyssCrate | Milestones", view, slot -> {
+            if (slot == 49) player.closeContainer();
+        });
+    }
+
+    private static void openMilestoneAdmin(ServerPlayer admin) {
+        SimpleContainer view = new SimpleContainer(54);
+        view.setItem(4, button(Items.COMMAND_BLOCK, "Configure: /crate milestoneadmin set <points> <command>"));
+        List<Integer> thresholds = milestoneThresholds();
+        for (int i = 0; i < Math.min(45, thresholds.size()); i++) {
+            int n = thresholds.get(i);
+            view.setItem(i + 9, button(Items.GOLD_INGOT, n + " points: " + MILESTONES.getProperty("reward." + n)));
+        }
+        view.setItem(49, button(Items.BARRIER, "Close"));
+        showStatsMenu(admin, "AbyssCrate | Milestone Admin", view, slot -> {
+            if (slot == 49) admin.closeContainer();
+        });
     }
 
     private static void showStatsMenu(ServerPlayer viewer, String title, SimpleContainer view, java.util.function.IntConsumer handler) {
