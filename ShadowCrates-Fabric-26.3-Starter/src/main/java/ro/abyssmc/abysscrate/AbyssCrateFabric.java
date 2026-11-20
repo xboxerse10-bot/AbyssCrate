@@ -57,6 +57,13 @@ import java.util.regex.Pattern;
  * Nu contine inca interactiuni cu blocuri, chei sau recompense.
  */
 public final class AbyssCrateFabric implements ModInitializer {
+    // 3R: UUID-based persistent opening statistics and bounded reward history.
+    private static final Path STATS_DIR = Path.of("config", "AbyssCrate", "statistics");
+    private static final Path STATS_FILE = STATS_DIR.resolve("openings.properties");
+    private static final Path HISTORY_FILE = STATS_DIR.resolve("history.properties");
+    private static final Properties STATS = new Properties();
+    private static final Properties HISTORY = new Properties();
+    private static final int MAX_HISTORY = 100;
     private static final Path DIR = Path.of("config", "AbyssCrate");
     private static final Path DATA = DIR.resolve("crates.properties");
     private static final Path MESSAGES_FILE = DIR.resolve("messages.properties");
@@ -115,6 +122,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadSettings();
             loadHolograms();
             loadKeys();
+            loadStatistics();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
@@ -236,6 +244,24 @@ public final class AbyssCrateFabric implements ModInitializer {
             return false;
         });
 
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(Commands.literal("crate")
+                .then(Commands.literal("stats")
+                    .executes(ctx -> { openStatistics(ctx.getSource().getPlayerOrException(), ctx.getSource().getPlayerOrException().getUUID(), ctx.getSource().getPlayerOrException().getName().getString()); return 1; })
+                    .then(Commands.argument("player", EntityArgument.player())
+                        .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                        .executes(ctx -> { ServerPlayer target = EntityArgument.getPlayer(ctx, "player"); openStatistics(ctx.getSource().getPlayerOrException(), target.getUUID(), target.getName().getString()); return 1; })))
+                .then(Commands.literal("history")
+                    .executes(ctx -> { ServerPlayer player = ctx.getSource().getPlayerOrException(); openHistory(player, player.getUUID(), player.getName().getString(), 0); return 1; })
+                    .then(Commands.argument("player", EntityArgument.player())
+                        .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                        .executes(ctx -> { ServerPlayer target = EntityArgument.getPlayer(ctx, "player"); openHistory(ctx.getSource().getPlayerOrException(), target.getUUID(), target.getName().getString(), 0); return 1; })))
+                .then(Commands.literal("top")
+                    .executes(ctx -> { openLeaderboard(ctx.getSource().getPlayerOrException(), false); return 1; }))
+                .then(Commands.literal("adminstats")
+                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .executes(ctx -> { openAdminStatistics(ctx.getSource().getPlayerOrException()); return 1; })));
+        });
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("preview")
@@ -1388,6 +1414,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             return;
         }
         player.getInventory().getItem(keySlot).shrink(1);
+        recordOpening(player, session.crate, session.prize, displayName);
         playCrateEffect(player, session.crate, "win");
         String rarity = rewardRarity(session.crate, session.prize.id());
         finalOpeningBurst(player, session, rarity);
@@ -1423,6 +1450,138 @@ public final class AbyssCrateFabric implements ModInitializer {
             String template = MESSAGES.getProperty("rarity." + rarity.toLowerCase(Locale.ROOT) + "-win", defaultMessage);
             if (!template.isEmpty()) player.sendSystemMessage(colored(rarityMessage(template, player, session.crate, displayName, session.prize.count(), rarity)));
         }
+    }
+
+    // 3R: Only completed, delivered rewards are recorded. The caller is finishMystery.
+    private static synchronized void loadStatistics() throws IOException {
+        Files.createDirectories(STATS_DIR);
+        if (Files.exists(STATS_FILE)) try (InputStream in = Files.newInputStream(STATS_FILE)) { STATS.load(in); }
+        if (Files.exists(HISTORY_FILE)) try (InputStream in = Files.newInputStream(HISTORY_FILE)) { HISTORY.load(in); }
+    }
+
+    private static synchronized void persistStatistics() throws IOException {
+        Files.createDirectories(STATS_DIR);
+        try (OutputStream out = Files.newOutputStream(STATS_FILE)) { STATS.store(out, "AbyssCrate 3R statistics by UUID"); }
+        try (OutputStream out = Files.newOutputStream(HISTORY_FILE)) { HISTORY.store(out, "AbyssCrate 3R bounded reward history"); }
+    }
+
+    private static long stat(String key) {
+        try { return Long.parseLong(STATS.getProperty(key, "0")); } catch (NumberFormatException ex) { return 0; }
+    }
+
+    private static void incrementStat(String key) { STATS.setProperty(key, Long.toString(stat(key) + 1)); }
+
+    private static synchronized void recordOpening(ServerPlayer player, String crate, RewardChoice prize, String displayName) {
+        String id = player.getUUID().toString();
+        String rarity = rewardRarity(crate, prize.id());
+        STATS.setProperty("player." + id + ".name", player.getName().getString());
+        incrementStat("player." + id + ".total");
+        incrementStat("player." + id + ".crate." + crate);
+        incrementStat("player." + id + ".rarity." + rarity);
+        incrementStat("global.total");
+        incrementStat("global.crate." + crate);
+        incrementStat("global.rarity." + rarity);
+        int size;
+        try { size = Integer.parseInt(HISTORY.getProperty(id + ".count", "0")); } catch (NumberFormatException ex) { size = 0; }
+        for (int i = Math.min(size, MAX_HISTORY - 1); i >= 1; i--)
+            HISTORY.setProperty(id + "." + i, HISTORY.getProperty(id + "." + (i - 1), ""));
+        // Tabs/newlines are removed to keep each record on one line in the GUI.
+        String safeName = displayName.replace('\t', ' ').replace('\n', ' ').replace('|', '/');
+        HISTORY.setProperty(id + ".0", System.currentTimeMillis() + "|" + crate + "|" + rarity + "|" + prize.count() + "|" + safeName);
+        HISTORY.setProperty(id + ".count", Integer.toString(Math.min(MAX_HISTORY, size + 1)));
+        try { persistStatistics(); } catch (IOException ex) { System.err.println("[AbyssCrate] Cannot save statistics: " + ex.getMessage()); }
+    }
+
+    private static void showStatsMenu(ServerPlayer viewer, String title, SimpleContainer view, java.util.function.IntConsumer handler) {
+        viewer.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x6, sync, inv, view, 6) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 54) { handler.accept(slot); return; }
+                super.clicked(slot, button, input, clicker);
+            }
+            @Override public ItemStack quickMoveStack(Player clicker, int slot) { return ItemStack.EMPTY; }
+        }, Component.literal(title)));
+    }
+
+    private static void openStatistics(ServerPlayer viewer, UUID target, String name) {
+        String id = target.toString();
+        SimpleContainer view = new SimpleContainer(54);
+        view.setItem(4, button(Items.PLAYER_HEAD, "Statistics: " + name));
+        view.setItem(20, button(Items.CHEST, "Total openings: " + stat("player." + id + ".total")));
+        view.setItem(22, button(Items.NETHER_STAR, "LEGENDARY wins: " + stat("player." + id + ".rarity.LEGENDARY")));
+        view.setItem(24, button(Items.EMERALD, "EPIC wins: " + stat("player." + id + ".rarity.EPIC")));
+        List<String> crates = new ArrayList<>();
+        synchronized (CRATES) { for (Object key : CRATES.keySet()) crates.add(key.toString()); }
+        crates.sort(String::compareTo);
+        for (int i = 0; i < Math.min(9, crates.size()); i++) view.setItem(27 + i, button(Items.TRIPWIRE_HOOK, crates.get(i) + ": " + stat("player." + id + ".crate." + crates.get(i))));
+        view.setItem(45, button(Items.BOOK, "Reward History"));
+        view.setItem(49, button(Items.GOLD_INGOT, "Leaderboards"));
+        showStatsMenu(viewer, "AbyssCrate | Stats | " + name, view, slot -> {
+            if (slot == 45) openHistory(viewer, target, name, 0);
+            else if (slot == 49) openLeaderboard(viewer, false);
+        });
+    }
+
+    private static void openHistory(ServerPlayer viewer, UUID target, String name, int page) {
+        String id = target.toString();
+        int count;
+        try { count = Integer.parseInt(HISTORY.getProperty(id + ".count", "0")); } catch (NumberFormatException ex) { count = 0; }
+        int maxPage = Math.max(0, (count - 1) / 45);
+        int current = Math.max(0, Math.min(page, maxPage));
+        SimpleContainer view = new SimpleContainer(54);
+        for (int i = 0; i < 45 && current * 45 + i < count; i++) {
+            String raw = HISTORY.getProperty(id + "." + (current * 45 + i), "");
+            String[] fields = raw.split("\\|", 5);
+            if (fields.length != 5) continue;
+            String date;
+            try { date = java.time.Instant.ofEpochMilli(Long.parseLong(fields[0])).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString(); }
+            catch (Exception ex) { date = "Unknown date"; }
+            view.setItem(i, button(Items.PAPER, fields[2] + " | " + fields[3] + "x " + fields[4] + " | " + fields[1] + " | " + date));
+        }
+        view.setItem(45, button(Items.ARROW, "Previous page"));
+        view.setItem(49, button(Items.BARRIER, "Back to statistics"));
+        view.setItem(53, button(Items.ARROW, "Next page"));
+        showStatsMenu(viewer, "History | " + name + " | " + (current + 1) + "/" + (maxPage + 1), view, slot -> {
+            if (slot == 45) openHistory(viewer, target, name, current - 1);
+            else if (slot == 49) openStatistics(viewer, target, name);
+            else if (slot == 53) openHistory(viewer, target, name, current + 1);
+        });
+    }
+
+    private static List<String> leaderboardIds(String field) {
+        List<String> ids = new ArrayList<>();
+        for (String key : STATS.stringPropertyNames()) {
+            if (key.startsWith("player.") && key.endsWith(".name")) ids.add(key.substring(7, key.length() - 5));
+        }
+        ids.sort((a, b) -> Long.compare(stat("player." + b + "." + field), stat("player." + a + "." + field)));
+        return ids;
+    }
+
+    private static void openLeaderboard(ServerPlayer viewer, boolean legendary) {
+        String field = legendary ? "rarity.LEGENDARY" : "total";
+        SimpleContainer view = new SimpleContainer(54);
+        List<String> ids = leaderboardIds(field);
+        for (int i = 0; i < Math.min(10, ids.size()); i++) {
+            String id = ids.get(i);
+            view.setItem(10 + (i / 7) * 9 + (i % 7), button(Items.GOLD_INGOT, "#" + (i + 1) + " " + STATS.getProperty("player." + id + ".name", "Unknown") + " - " + stat("player." + id + "." + field)));
+        }
+        view.setItem(45, button(Items.CHEST, "Top total openings"));
+        view.setItem(53, button(Items.NETHER_STAR, "Top LEGENDARY wins"));
+        showStatsMenu(viewer, legendary ? "AbyssCrate | Top LEGENDARY" : "AbyssCrate | Top Openings", view, slot -> {
+            if (slot == 45) openLeaderboard(viewer, false);
+            else if (slot == 53) openLeaderboard(viewer, true);
+        });
+    }
+
+    private static void openAdminStatistics(ServerPlayer viewer) {
+        SimpleContainer view = new SimpleContainer(54);
+        view.setItem(4, button(Items.NETHER_STAR, "Global openings: " + stat("global.total")));
+        view.setItem(13, button(Items.GOLD_INGOT, "Global LEGENDARY: " + stat("global.rarity.LEGENDARY")));
+        List<String> crates = new ArrayList<>();
+        synchronized (CRATES) { for (Object key : CRATES.keySet()) crates.add(key.toString()); }
+        crates.sort(String::compareTo);
+        for (int i = 0; i < Math.min(27, crates.size()); i++) view.setItem(18 + i, button(Items.CHEST, crates.get(i) + " openings: " + stat("global.crate." + crates.get(i))));
+        view.setItem(49, button(Items.GOLD_INGOT, "Open leaderboards"));
+        showStatsMenu(viewer, "AbyssCrate | Admin Statistics", view, slot -> { if (slot == 49) openLeaderboard(viewer, false); });
     }
 
     // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
