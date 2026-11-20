@@ -1,0 +1,42 @@
+
+name: Build AbyssCrate Fabric 26.3
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.7.1'
+
+      - name: Build AbyssCrate
+        working-directory: ShadowCrates-Fabric-26.3-Starter
+        run: gradle clean build --no-daemon --stacktrace
+
+      - name: Upload compiled JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: AbyssCrate-Fabric-26.3
+          path: ShadowCrates-Fabric-26.3-Starter/build/libs/*.jar
+          if-no-files-found: error
