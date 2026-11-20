@@ -207,7 +207,8 @@ public final class AbyssCrateFabric implements ModInitializer {
                 .then(Commands.literal("hologram")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
                     .then(Commands.argument("name", StringArgumentType.word())
-                        .then(Commands.argument("line", IntegerArgumentType.integer(1, 10))
+                        .then(Commands.literal("add")
+                            .then(Commands.argument("line", IntegerArgumentType.integer(1, 10))
                             .then(Commands.argument("text", StringArgumentType.greedyString())
                                 .executes(ctx -> {
                                     String crate = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
@@ -218,7 +219,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                                             IntegerArgumentType.getInteger(ctx, "line"),
                                             StringArgumentType.getString(ctx, "text"));
                                     return 1;
-                                })))
+                                }))))
                         .then(Commands.literal("remove")
                             .then(Commands.argument("removeLine", IntegerArgumentType.integer(1, 10))
                                 .executes(ctx -> {
