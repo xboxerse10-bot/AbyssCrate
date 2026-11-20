@@ -66,6 +66,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Properties REWARDS = new Properties();
     private static final Path SETTINGS_FILE = DIR.resolve("crate-settings.properties");
     private static final Properties SETTINGS = new Properties();
+    private static final Path HOLOGRAMS_FILE = DIR.resolve("holograms.properties");
+    private static final Properties HOLOGRAMS = new Properties();
     private static final String DEFAULT_GRADIENT_PREFIX = "&#004FFF[&#005CFFA&#0067FFb&#0072FFy&#007CFFs&#0086FFs&#008FFFC&#0098FFr&#00A0FFa&#00A8FFt&#00B0FFe&#00B7FF]&r ";
     private static final String KEY_TAG = "shadowcrates_key_type";
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
@@ -96,6 +98,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadPlacements();
             loadRewards();
             loadSettings();
+            loadHolograms();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
@@ -200,6 +203,22 @@ public final class AbyssCrateFabric implements ModInitializer {
         });
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(Commands.literal("crate")
+                .then(Commands.literal("hologram")
+                    .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .then(Commands.argument("name", StringArgumentType.word())
+                        .then(Commands.argument("line", IntegerArgumentType.integer(1, 3))
+                            .then(Commands.argument("text", StringArgumentType.greedyString())
+                                .executes(ctx -> {
+                                    String crate = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
+                                    synchronized (CRATES) {
+                                        if (!CRATES.containsKey(crate)) { reply(ctx.getSource(), "not-found", crate); return 0; }
+                                    }
+                                    setHologramLine(ctx.getSource().getPlayerOrException(), crate,
+                                            IntegerArgumentType.getInteger(ctx, "line"),
+                                            StringArgumentType.getString(ctx, "text"));
+                                    return 1;
+                                }))))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("editor")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
@@ -348,6 +367,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadPlacements();
                         loadRewards();
             loadSettings();
+            loadHolograms();
                         hologramRefreshNeeded = true;
                         reply(ctx.getSource(), "reloaded", "");
                         return 1;
@@ -396,6 +416,109 @@ public final class AbyssCrateFabric implements ModInitializer {
                 super.clicked(slot, button, ContainerInput, player);
             }
         }, Component.literal("AbyssCrate | " + crate)));
+    }
+
+    // 3N: Texts are editable through /crate hologram and holograms.properties.
+    private static synchronized void loadHolograms() throws IOException {
+        Files.createDirectories(DIR);
+        HOLOGRAMS.clear();
+        if (Files.exists(HOLOGRAMS_FILE)) {
+            try (InputStream in = Files.newInputStream(HOLOGRAMS_FILE)) { HOLOGRAMS.load(in); }
+        }
+    }
+
+    private static synchronized void saveHolograms() throws IOException {
+        Files.createDirectories(DIR);
+        try (OutputStream out = Files.newOutputStream(HOLOGRAMS_FILE)) {
+            HOLOGRAMS.store(out, "AbyssCrate hologram text; supports &#RRGGBB and &l");
+        }
+    }
+
+    private static synchronized String hologramValue(String crate, String key, String fallback) {
+        return HOLOGRAMS.getProperty(crate + "." + key, fallback);
+    }
+
+    private static void setHologramLine(ServerPlayer admin, String crate, int line, String value) {
+        if (value.length() > 240 || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0) {
+            admin.sendSystemMessage(Component.literal("[AbyssCrate] Maximum 240 caractere, fara linii noi."));
+            return;
+        }
+        synchronized (HOLOGRAMS) {
+            String key = crate + ".line" + line;
+            String previous = (String) HOLOGRAMS.setProperty(key, value);
+            try { saveHolograms(); hologramRefreshNeeded = true; }
+            catch (IOException ex) {
+                if (previous == null) HOLOGRAMS.remove(key); else HOLOGRAMS.setProperty(key, previous);
+                admin.sendSystemMessage(Component.literal("[AbyssCrate] Nu pot salva holograms.properties"));
+                return;
+            }
+        }
+        admin.sendSystemMessage(Component.literal("[AbyssCrate] Randul " + line + " salvat."));
+    }
+
+    private static void openHologramEditor(ServerPlayer admin, String crate) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(10, button(Items.NAME_TAG, "Line 1: /crate hologram " + crate + " 1 <text>"));
+        view.setItem(11, button(Items.PAPER, "Line 2: /crate hologram " + crate + " 2 <text>"));
+        view.setItem(12, button(Items.PAPER, "Line 3: /crate hologram " + crate + " 3 <text>"));
+        view.setItem(14, button(Items.ARROW, "Height: " + settingInt(crate, "hologram-height", 0) + " cm (click +10, right click -10)"));
+        view.setItem(15, button(Items.SPYGLASS, "Scale: " + settingInt(crate, "hologram-scale", 50) + "% (click +10, right click -10)"));
+        view.setItem(22, button(Items.BARRIER, "Back to Settings"));
+        admin.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) {
+                    if (slot == 14) {
+                        int v = settingInt(crate, "hologram-height", 0);
+                        changeHologramSetting(admin, crate, "hologram-height", Math.max(-100, Math.min(200, v + (button == 1 ? -10 : 10))));
+                    } else if (slot == 15) {
+                        int v = settingInt(crate, "hologram-scale", 50);
+                        changeHologramSetting(admin, crate, "hologram-scale", Math.max(20, Math.min(150, v + (button == 1 ? -10 : 10))));
+                    } else if (slot == 22) openCrateSettings(admin, crate);
+                    return;
+                }
+                super.clicked(slot, button, input, clicker);
+            }
+        }, Component.literal("AbyssCrate Hologram | " + crate)));
+    }
+
+    private static void changeHologramSetting(ServerPlayer admin, String crate, String key, int value) {
+        synchronized (SETTINGS) {
+            String prop = crate + "." + key;
+            String previous = (String) SETTINGS.setProperty(prop, Integer.toString(value));
+            try { saveSettings(); hologramRefreshNeeded = true; }
+            catch (IOException ex) {
+                if (previous == null) SETTINGS.remove(prop); else SETTINGS.setProperty(prop, previous);
+                admin.sendSystemMessage(Component.literal("[AbyssCrate] Eroare la salvare."));
+            }
+        }
+        openHologramEditor(admin, crate);
+    }
+
+    private static String snbtQuote(String text) {
+        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private static String hologramComponent(String text, String fallbackColor) {
+        // Emit an SNBT text-component compound with per-segment HEX colors.
+        java.util.List<String> segments = new ArrayList<>();
+        Pattern pattern = Pattern.compile("(?i)&#([0-9a-f]{6})|&([lor])");
+        Matcher matcher = pattern.matcher(text);
+        String color = fallbackColor;
+        boolean bold = false;
+        int start = 0;
+        while (matcher.find()) {
+            if (matcher.start() > start) {
+                segments.add("{text:" + snbtQuote(text.substring(start, matcher.start())) + ",color:" + snbtQuote(color) + ",bold:" + bold + "}");
+            }
+            if (matcher.group(1) != null) color = "#" + matcher.group(1).toUpperCase(Locale.ROOT);
+            else if (matcher.group(2).equalsIgnoreCase("l")) bold = true;
+            else if (matcher.group(2).equalsIgnoreCase("r")) { bold = false; color = fallbackColor; }
+            start = matcher.end();
+        }
+        if (start < text.length()) segments.add("{text:" + snbtQuote(text.substring(start)) + ",color:" + snbtQuote(color) + ",bold:" + bold + "}");
+        if (segments.isEmpty()) return "{text:\"\"}";
+        if (segments.size() == 1) return segments.get(0);
+        return "{text:\"\",extra:[" + String.join(",", segments) + "]}";
     }
 
     // 3J: Per-crate settings persisted independently of rewards and placements.
@@ -468,6 +591,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(14, button(Items.PAPER, "Broadcast Win: " + (settingBool(crate, "broadcast", false) ? "ON" : "OFF")));
         view.setItem(15, button(Items.CHEST, "Preview Rewards: " + (settingBool(crate, "preview", true) ? "ON" : "OFF")));
         view.setItem(20, button(Items.END_ROD, "Hologram: " + (settingBool(crate, "hologram", true) ? "ON" : "OFF")));
+        view.setItem(19, button(Items.OAK_SIGN, "Hologram Editor"));
         view.setItem(22, button(Items.ARROW, "Back"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
@@ -493,6 +617,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         case 14 -> changeSetting(admin, crate, "broadcast", Boolean.toString(!settingBool(crate, "broadcast", false)));
                         case 15 -> changeSetting(admin, crate, "preview", Boolean.toString(!settingBool(crate, "preview", true)));
                         case 20 -> changeSetting(admin, crate, "hologram", Boolean.toString(!settingBool(crate, "hologram", true)));
+                        case 19 -> openHologramEditor(admin, crate);
                         case 22 -> openMainEditor(admin, crate);
                         default -> { }
                     }
@@ -598,21 +723,24 @@ public final class AbyssCrateFabric implements ModInitializer {
                 runHologramCommand(server, "execute in " + dim + " positioned " + center
                         + " run kill @e[type=minecraft:text_display,tag=abysscrate_hologram,distance=..3]");
                 if (!settingBool(entry.getValue(), "hologram", true)) continue;
-                String name = displayName(entry.getValue()).replaceAll("[^a-zA-Z0-9 _-]", "");
-                String[] lines = {"✦ " + name + " ✦", "Right Click to Open", "Left Click to Preview"};
+                String crate = entry.getValue();
+                String[] lines = {
+                    hologramValue(crate, "line1", "&l✦ " + displayName(crate) + " ✦"),
+                    hologramValue(crate, "line2", "Right Click to Open"),
+                    hologramValue(crate, "line3", "Left Click to Preview")
+                };
                 String[] colors = {"#00B7FF", "#FFFFFF", "#AAAAAA"};
                 double[] offsets = {0.28, 0.06, -0.16};
+                double height = Math.max(-100, Math.min(200, settingInt(crate, "hologram-height", 0))) / 100.0;
+                float scale = Math.max(20, Math.min(150, settingInt(crate, "hologram-scale", 50))) / 100.0f;
                 for (int line = 0; line < lines.length; line++) {
-                    String label = lines[line].replace("\\", "\\\\").replace("\"", "\\\"");
-                    String pos = (x + 0.5) + " " + (y + 1.75 + offsets[line]) + " " + (z + 0.5);
-                    // In 26.3 'text' is a component compound, not an escaped JSON string.
+                    String pos = (x + 0.5) + " " + (y + 1.75 + offsets[line] + height) + " " + (z + 0.5);
                     String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],"
                             + "billboard:\"center\",alignment:\"center\",see_through:1b,"
                             + "background:0,shadow:1b,"
                             + "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],"
-                            + "scale:[0.5f,0.5f,0.5f],right_rotation:[0f,0f,0f,1f]},"
-                            + "text:{text:\"" + label + "\",color:\"" + colors[line] + "\",bold:"
-                            + (line == 0 ? "true" : "false") + "}}";
+                            + "scale:[" + scale + "f," + scale + "f," + scale + "f],right_rotation:[0f,0f,0f,1f]},"
+                            + "text:" + hologramComponent(lines[line], colors[line]) + "}";
                     runHologramCommand(server, "execute in " + dim + " positioned " + pos
                             + " run summon minecraft:text_display ~ ~ ~ " + nbt);
                 }
