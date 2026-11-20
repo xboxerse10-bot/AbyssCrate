@@ -71,6 +71,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
     private static final int ANIMATION_TICKS = 100;
     private static final int REVEAL_TICKS = 20;
+    private static int hologramTick = 0;
+    private static boolean hologramRefreshNeeded = true;
 
     private static final class MysterySession {
         final String crate;
@@ -148,6 +150,12 @@ public final class AbyssCrateFabric implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
+            // Reconcile floating labels periodically, including after chunk loads.
+            if (++hologramTick >= 600 || hologramRefreshNeeded) {
+                hologramTick = 0;
+                hologramRefreshNeeded = false;
+                refreshHolograms(server);
+            }
             var iterator = ACTIVE_OPENINGS.entrySet().iterator();
             while (iterator.hasNext()) {
                 var entry = iterator.next();
@@ -243,7 +251,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                             String key = locationKey(player.level().dimension().identifier().toString(), hit.getBlockPos());
                             synchronized (PLACEMENTS) {
                                 String previous = (String) PLACEMENTS.setProperty(key, name);
-                                try { savePlacements(); }
+                                try { savePlacements(); hologramRefreshNeeded = true; }
                                 catch (IOException ex) {
                                     if (previous == null) PLACEMENTS.remove(key);
                                     else PLACEMENTS.setProperty(key, previous);
@@ -268,7 +276,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                             reply(ctx.getSource(), "not-a-crate", "");
                             return 0;
                         }
-                        try { savePlacements(); }
+                        try { savePlacements(); hologramRefreshNeeded = true; }
                         catch (IOException ex) {
                             PLACEMENTS.setProperty(key, previous);
                             reply(ctx.getSource(), "save-error", previous);
@@ -331,6 +339,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadPlacements();
                         loadRewards();
             loadSettings();
+                        hologramRefreshNeeded = true;
                         reply(ctx.getSource(), "reloaded", "");
                         return 1;
                     } catch (IOException ex) {
@@ -417,7 +426,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         synchronized (SETTINGS) {
             String prop = crate + "." + key;
             String old = (String) SETTINGS.setProperty(prop, value);
-            try { saveSettings(); }
+            try { saveSettings(); hologramRefreshNeeded = true; }
             catch (IOException ex) {
                 if (old == null) SETTINGS.remove(prop);
                 else SETTINGS.setProperty(prop, old);
@@ -447,6 +456,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(13, button(Items.NOTE_BLOCK, "Sound effects: planned for 3K"));
         view.setItem(14, button(Items.PAPER, "Broadcast Win: " + (settingBool(crate, "broadcast", false) ? "ON" : "OFF")));
         view.setItem(15, button(Items.CHEST, "Preview Rewards: " + (settingBool(crate, "preview", true) ? "ON" : "OFF")));
+        view.setItem(20, button(Items.END_ROD, "Hologram: " + (settingBool(crate, "hologram", true) ? "ON" : "OFF")));
         view.setItem(22, button(Items.ARROW, "Back"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
@@ -465,6 +475,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         case 13 -> admin.sendSystemMessage(Component.literal("[AbyssCrate] Sunetele vor fi adaugate intr-o versiune viitoare."));
                         case 14 -> changeSetting(admin, crate, "broadcast", Boolean.toString(!settingBool(crate, "broadcast", false)));
                         case 15 -> changeSetting(admin, crate, "preview", Boolean.toString(!settingBool(crate, "preview", true)));
+                        case 20 -> changeSetting(admin, crate, "hologram", Boolean.toString(!settingBool(crate, "hologram", true)));
                         case 22 -> openMainEditor(admin, crate);
                         default -> { }
                     }
@@ -473,6 +484,46 @@ public final class AbyssCrateFabric implements ModInitializer {
                 super.clicked(slot, button, input, clicker);
             }
         }, Component.literal("AbyssCrate Settings | " + crate)));
+    }
+
+
+    // 3L: Text Display labels, managed by the server. Each placement has a stable unique tag.
+    private static void refreshHolograms(net.minecraft.server.MinecraftServer server) {
+        Map<String, String> snapshot = new HashMap<>();
+        synchronized (PLACEMENTS) {
+            for (String key : PLACEMENTS.stringPropertyNames()) snapshot.put(key, PLACEMENTS.getProperty(key));
+        }
+        for (var entry : snapshot.entrySet()) {
+            String[] parts = entry.getKey().split("\\|", 2);
+            if (parts.length != 2) continue;
+            String[] xyz = parts[1].split(",");
+            if (xyz.length != 3) continue;
+            try {
+                int x = Integer.parseInt(xyz[0]);
+                int y = Integer.parseInt(xyz[1]);
+                int z = Integer.parseInt(xyz[2]);
+                String dim = parts[0];
+                if (!dim.matches("[a-z0-9_:.\\/-]+")) continue;
+                String tag = "abyss_h_" + Integer.toUnsignedString(entry.getKey().hashCode(), 36);
+                // Remove only our own label at this location, then rebuild it.
+                String pos = (x + 0.5) + " " + (y + 1.75) + " " + (z + 0.5);
+                String prefix = "execute in " + dim + " positioned " + pos + " run ";
+                runHologramCommand(server, prefix + "kill @e[type=minecraft:text_display,tag=" + tag + ",distance=..0.2]");
+                if (!settingBool(entry.getValue(), "hologram", true)) continue;
+                String name = displayName(entry.getValue()).replaceAll("[^a-zA-Z0-9 _-]", "");
+                String label = "{\"text\":\"✦ " + name + " ✦\",\"color\":\"aqua\",\"bold\":true,\"extra\":[{\"text\":\"\\nRight Click to Open\\nLeft Click to Preview\",\"color\":\"white\",\"bold\":false}]}";
+                String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],billboard:\"center\",alignment:\"center\",see_through:1b,background:0,text:'" + label + "'}";
+                runHologramCommand(server, prefix + "summon minecraft:text_display ~ ~ ~ " + nbt);
+            } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private static void runHologramCommand(net.minecraft.server.MinecraftServer server, String command) {
+        try {
+            server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), command);
+        } catch (RuntimeException ex) {
+            System.err.println("[AbyssCrate] Hologram command failed: " + ex.getMessage());
+        }
     }
 
     // 3I: Add up to 18 different reward stacks in one operation.
