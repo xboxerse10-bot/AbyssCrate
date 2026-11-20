@@ -8,7 +8,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.inventory.ChestMenu;
-import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.item.Item;
 import net.minecraft.resources.Identifier;
@@ -274,20 +274,20 @@ public final class AbyssCrateFabric implements ModInitializer {
 
     private static void openMainEditor(ServerPlayer admin, String crate) {
         SimpleContainer view = new SimpleContainer(27);
-        view.setItem(10, button(Items.LIME_DYE, "Add Item"));
+        view.setItem(10, button(Items.EMERALD, "Add Item"));
         view.setItem(12, button(Items.CHEST, "View Rewards"));
         view.setItem(14, button(Items.COMPARATOR, "Change Chance - select reward"));
         view.setItem(16, button(Items.PAPER, "Crate: " + crate));
         view.setItem(22, button(Items.BARRIER, "Close"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
-            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+            @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
                 if (slot >= 0 && slot < 27) {
                     if (slot == 10) openAddEditor(admin, crate);
                     else if (slot == 12 || slot == 14) openRewardsEditor(admin, crate, 0);
                     else if (slot == 22) admin.closeContainer();
                     return;
                 }
-                super.clicked(slot, button, clickType, player);
+                super.clicked(slot, button, ContainerInput, player);
             }
         }, Component.literal("AbyssCrate | " + crate)));
     }
@@ -297,9 +297,9 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(4, button(Items.PAPER, "Pune recompensa in slotul 13, apoi inchide"));
         view.setItem(22, button(Items.BARRIER, "Inchide pentru a salva"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
-            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+            @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
                 if (slot >= 0 && slot < 27 && slot != 13) return;
-                super.clicked(slot, button, clickType, player);
+                super.clicked(slot, button, ContainerInput, player);
             }
             @Override public void removed(Player player) {
                 ItemStack reward = view.removeItemNoUpdate(13);
@@ -362,7 +362,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(22, button(Items.BARRIER, "Back"));
         view.setItem(26, button(Items.ARROW, "Next page"));
         admin.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, sync, inv, view, 3) {
-            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+            @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
                 if (slot >= 0 && slot < 27) {
                     int index = current * 18 + slot;
                     if (slot < 18 && index < ids.size()) openRewardDetails(admin, crate, ids.get(index), current);
@@ -371,7 +371,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     else if (slot == 26) openRewardsEditor(admin, crate, current + 1);
                     return;
                 }
-                super.clicked(slot, button, clickType, player);
+                super.clicked(slot, button, ContainerInput, player);
             }
         }, Component.literal("Rewards | " + crate + " | " + (current + 1))));
     }
@@ -385,15 +385,15 @@ public final class AbyssCrateFabric implements ModInitializer {
         int chance = parseChance(parts);
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(4, rewardIcon(crate, id));
-        view.setItem(10, button(Items.RED_DYE, "-10%"));
+        view.setItem(10, button(Items.REDSTONE, "-10%"));
         view.setItem(11, button(Items.REDSTONE, "-1%"));
         view.setItem(13, button(Items.PAPER, "Chance: " + chance + "%"));
         view.setItem(15, button(Items.EMERALD, "+1%"));
-        view.setItem(16, button(Items.LIME_DYE, "+10%"));
+        view.setItem(16, button(Items.EMERALD, "+10%"));
         view.setItem(21, button(Items.LAVA_BUCKET, "Remove Reward"));
         view.setItem(23, button(Items.ARROW, "Back"));
         admin.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, sync, inv, view, 3) {
-            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+            @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
                 if (slot >= 0 && slot < 27) {
                     if (slot == 23) { openRewardsEditor(admin, crate, page); return; }
                     int delta = slot == 10 ? -10 : slot == 11 ? -1 : slot == 15 ? 1 : slot == 16 ? 10 : 0;
@@ -416,7 +416,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     }
                     return;
                 }
-                super.clicked(slot, button, clickType, player);
+                super.clicked(slot, button, ContainerInput, player);
             }
         }, Component.literal("Edit Reward #" + id)));
     }
