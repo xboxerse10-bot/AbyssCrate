@@ -32,6 +32,8 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.InteractionResult;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
+import net.minecraft.world.item.component.ItemLore;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import java.util.Map;
@@ -103,6 +105,22 @@ public final class AbyssCrateFabric implements ModInitializer {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
 
+        // 3O: Left-click opens the public preview; right-click remains key opening.
+        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
+            if (world.isClientSide()) return InteractionResult.PASS;
+            String crate;
+            synchronized (PLACEMENTS) {
+                crate = PLACEMENTS.getProperty(locationKey(world.dimension().identifier().toString(), pos));
+            }
+            if (crate == null) return InteractionResult.PASS;
+            if (player instanceof ServerPlayer serverPlayer && settingBool(crate, "preview", true)) {
+                openPlayerPreview(serverPlayer, crate, 0);
+            } else if (player instanceof ServerPlayer) {
+                player.sendSystemMessage(Component.literal("[AbyssCrate] Preview dezactivat pentru acest crate."));
+            }
+            return InteractionResult.SUCCESS;
+        });
+
         UseBlockCallback.EVENT.register((player, world, hand, hit) -> {
             if (world.isClientSide()) return InteractionResult.PASS;
             String name;
@@ -113,10 +131,6 @@ public final class AbyssCrateFabric implements ModInitializer {
             if (!(player instanceof ServerPlayer serverPlayer)) return InteractionResult.SUCCESS;
             ItemStack held = player.getItemInHand(hand);
             if (!isKeyFor(held, name)) {
-                if (held.isEmpty() && settingBool(name, "preview", true)) {
-                    openPlayerPreview(serverPlayer, name);
-                    return InteractionResult.SUCCESS;
-                }
                 player.sendSystemMessage(colored(message("needs-key", name)));
                 return InteractionResult.SUCCESS;
             }
@@ -203,6 +217,21 @@ public final class AbyssCrateFabric implements ModInitializer {
         });
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(Commands.literal("crate")
+                .then(Commands.literal("preview")
+                    .then(Commands.argument("name", StringArgumentType.word())
+                        .executes(ctx -> {
+                            String crate = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
+                            synchronized (CRATES) {
+                                if (!CRATES.containsKey(crate)) { reply(ctx.getSource(), "not-found", crate); return 0; }
+                            }
+                            if (!settingBool(crate, "preview", true)) {
+                                ctx.getSource().sendFailure(Component.literal("Preview este dezactivat pentru acest crate."));
+                                return 0;
+                            }
+                            openPlayerPreview(ctx.getSource().getPlayerOrException(), crate, 0);
+                            return 1;
+                        }))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("hologram")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
@@ -596,15 +625,64 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openPlayerPreview(ServerPlayer player, String crate) {
+        openPlayerPreview(player, crate, 0);
+    }
+
+    private static void openPlayerPreview(ServerPlayer player, String crate, int page) {
         List<Integer> ids = rewardIds(crate);
-        SimpleContainer view = new SimpleContainer(27);
-        for (int i = 0; i < 27 && i < ids.size(); i++) view.setItem(i, rewardIcon(crate, ids.get(i)));
-        player.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+        int maxPage = Math.max(0, (ids.size() - 1) / 45);
+        int current = Math.max(0, Math.min(page, maxPage));
+        SimpleContainer view = new SimpleContainer(54);
+        int totalWeight = 0;
+        for (int rewardId : ids) {
+            String raw;
+            synchronized (REWARDS) { raw = REWARDS.getProperty(crate + "." + rewardId, ""); }
+            String[] parts = raw.split("\\|");
+            if (parts.length >= 2) totalWeight += Math.max(0, parseChance(parts));
+        }
+        for (int i = 0; i < 45 && current * 45 + i < ids.size(); i++) {
+            int rewardId = ids.get(current * 45 + i);
+            String raw;
+            synchronized (REWARDS) { raw = REWARDS.getProperty(crate + "." + rewardId, ""); }
+            String[] parts = raw.split("\\|");
+            ItemStack icon = rewardIcon(crate, rewardId);
+            int amount = 1;
+            if (parts.length >= 2) {
+                try { amount = Math.max(1, Math.min(64, Integer.parseInt(parts[1]))); }
+                catch (NumberFormatException ignored) { }
+            }
+            icon.setCount(amount);
+            int weight = parts.length >= 2 ? Math.max(0, parseChance(parts)) : 0;
+            double percent = totalWeight > 0 ? 100.0 * weight / totalWeight : 0.0;
+            icon.set(DataComponents.CUSTOM_NAME, Component.literal("Reward #" + rewardId));
+            icon.set(DataComponents.LORE, new ItemLore(List.of(
+                Component.literal("Sansa: " + String.format(Locale.ROOT, "%.2f", percent) + "%"),
+                Component.literal("Cantitate: " + amount),
+                Component.literal("Doar vizualizare")
+            )));
+            view.setItem(i, icon);
+        }
+        if (current > 0) view.setItem(45, button(Items.ARROW, "Pagina anterioara"));
+        view.setItem(49, button(Items.BOOK, "Pagina " + (current + 1) + "/" + (maxPage + 1) + " | " + ids.size() + " recompense"));
+        if (current < maxPage) view.setItem(53, button(Items.ARROW, "Pagina urmatoare"));
+        player.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x6, id, inv, view, 6) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
-                if (slot >= 0 && slot < 27) return;
+                if (slot == 45 && current > 0) {
+                    openPlayerPreview(player, crate, current - 1);
+                    return;
+                }
+                if (slot == 53 && current < maxPage) {
+                    openPlayerPreview(player, crate, current + 1);
+                    return;
+                }
+                // No movement into/out of the preview, including shift-click or hotbar swaps.
+                if (slot >= 0 && slot < 54) return;
                 super.clicked(slot, button, input, clicker);
             }
-        }, Component.literal("AbyssCrate Preview | " + displayName(crate))));
+            @Override public ItemStack quickMoveStack(Player clicker, int slot) {
+                return ItemStack.EMPTY;
+            }
+        }, Component.literal("Preview | " + displayName(crate) + " | " + (current + 1) + "/" + (maxPage + 1))));
     }
 
     private static void openCrateSettings(ServerPlayer admin, String crate) {
