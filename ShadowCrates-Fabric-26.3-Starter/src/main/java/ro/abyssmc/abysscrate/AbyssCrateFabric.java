@@ -15,6 +15,7 @@ import net.minecraft.resources.Identifier;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Comparator;
+import java.util.concurrent.ThreadLocalRandom;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -83,8 +84,26 @@ public final class AbyssCrateFabric implements ModInitializer {
                 player.sendSystemMessage(Component.literal(message("needs-key", name)));
                 return InteractionResult.SUCCESS;
             }
-            // Nu consumam cheia pana cand sistemul de recompense este implementat.
-            player.sendSystemMessage(Component.literal(message("key-valid", name)));
+            RewardChoice selected = chooseReward(name);
+            if (selected == null) {
+                player.sendSystemMessage(Component.literal(message("no-rewards", name)));
+                return InteractionResult.SUCCESS;
+            }
+            // For safety, require an empty inventory slot before awarding an item.
+            // This prevents accidental item loss and avoids consuming a key on failure.
+            if (!hasEmptyInventorySlot(serverPlayer)) {
+                player.sendSystemMessage(Component.literal(message("inventory-full", name)));
+                return InteractionResult.SUCCESS;
+            }
+            ItemStack prize = new ItemStack(selected.item(), selected.count());
+            if (!serverPlayer.getInventory().add(prize)) {
+                player.sendSystemMessage(Component.literal(message("inventory-full", name)));
+                return InteractionResult.SUCCESS;
+            }
+            held.shrink(1);
+            player.sendSystemMessage(Component.literal(message("reward-won", name)
+                .replace("{item}", BuiltInRegistries.ITEM.getKey(selected.item()).toString())
+                .replace("{amount}", Integer.toString(selected.count()))));
             return InteractionResult.SUCCESS;
         });
 
@@ -421,6 +440,46 @@ public final class AbyssCrateFabric implements ModInitializer {
         }, Component.literal("Edit Reward #" + id)));
     }
 
+    // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
+    // Zero-weight rewards cannot be selected. All-zero / missing rewards give nothing.
+    private record RewardChoice(Item item, int count, int weight) { }
+
+    private static RewardChoice chooseReward(String crate) {
+        List<RewardChoice> choices = new ArrayList<>();
+        long total = 0;
+        synchronized (REWARDS) {
+            for (int id : rewardIds(crate)) {
+                String value = REWARDS.getProperty(crate + "." + id, "");
+                String[] parts = value.split("\\|");
+                if (parts.length < 2) continue;
+                try {
+                    Item item = BuiltInRegistries.ITEM.getValue(Identifier.parse(parts[0]));
+                    if (item == null || item == Items.AIR) continue;
+                    int count = Integer.parseInt(parts[1]);
+                    int weight = parseChance(parts);
+                    if (count < 1 || count > 64 || weight <= 0) continue;
+                    choices.add(new RewardChoice(item, count, weight));
+                    total += weight;
+                } catch (RuntimeException ignored) { }
+            }
+        }
+        if (total == 0) return null;
+        long roll = ThreadLocalRandom.current().nextLong(total);
+        for (RewardChoice choice : choices) {
+            roll -= choice.weight();
+            if (roll < 0) return choice;
+        }
+        return null;
+    }
+
+    private static boolean hasEmptyInventorySlot(ServerPlayer player) {
+        // Only the 36 ordinary player inventory slots (hotbar + main inventory).
+        for (int slot = 0; slot < 36; slot++) {
+            if (player.getInventory().getItem(slot).isEmpty()) return true;
+        }
+        return false;
+    }
+
     private static int parseChance(String[] fields) {
         if (fields.length < 3) return 10; // Existing 3E rewards have no chance field.
         try { return Math.max(0, Math.min(100, Integer.parseInt(fields[2]))); }
@@ -440,7 +499,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static synchronized void saveRewards() throws IOException {
         Files.createDirectories(DIR);
         try (OutputStream out = Files.newOutputStream(REWARDS_FILE)) {
-            REWARDS.store(out, "AbyssCrate reward prototypes - itemId|count");
+            REWARDS.store(out, "AbyssCrate rewards - itemId|count|relativeWeight");
         }
     }
 
@@ -524,7 +583,9 @@ public final class AbyssCrateFabric implements ModInitializer {
         defaults.setProperty("look-at-block", "Priveste un bloc aflat la maximum 5 blocuri distanta.");
         defaults.setProperty("not-a-crate", "Acest bloc nu este un crate.");
         defaults.setProperty("needs-key", "Ai nevoie de cheia pentru crate-ul {crate}.");
-        defaults.setProperty("key-valid", "Cheia pentru {crate} este valida! Recompensele vor fi adaugate in etapa urmatoare.");
+        defaults.setProperty("key-valid", "Cheia pentru {crate} este valida.");
+        defaults.setProperty("no-rewards", "Crate-ul {crate} nu are recompense cu sansa mai mare de zero.");
+        defaults.setProperty("reward-won", "Ai castigat {amount} x {item} din crate-ul {crate}!");
         defaults.setProperty("key-given", "Cheile pentru {crate} au fost acordate.");
         defaults.setProperty("inventory-full", "Inventarul jucatorului este plin.");
         defaults.setProperty("protected", "Nu poti distruge acest crate.");
