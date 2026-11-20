@@ -607,7 +607,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         for (int slot = 0; slot < 54; slot++) {
             int row = slot / 9, col = slot % 9;
             if (row == 0 || row == 5 || col == 0 || col == 8)
-                view.setItem(slot, button(Items.GRAY_STAINED_GLASS_PANE, " "));
+                view.setItem(slot, button(Items.GRAY_STAINED_GLASS, " "));
         }
     }
 
