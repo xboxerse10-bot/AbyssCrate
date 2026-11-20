@@ -305,7 +305,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     .then(Commands.literal("reload").executes(ctx -> {
                         try { loadMilestones(); return 1; }
                         catch (IOException ex) { ctx.getSource().sendFailure(Component.literal(ex.getMessage())); return 0; }
-                    })))
+                    }))))
                 .then(Commands.literal("adminstats")
                     .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
                     .executes(ctx -> { openAdminStatistics(ctx.getSource().getPlayerOrException()); return 1; })));
