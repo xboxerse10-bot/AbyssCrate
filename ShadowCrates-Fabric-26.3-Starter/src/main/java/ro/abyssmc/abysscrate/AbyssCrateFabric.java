@@ -71,6 +71,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Path HOLOGRAMS_FILE = DIR.resolve("holograms.properties");
     private static final Properties HOLOGRAMS = new Properties();
     private static final String DEFAULT_GRADIENT_PREFIX = "&#004FFF[&#005CFFA&#0067FFb&#0072FFy&#007CFFs&#0086FFs&#008FFFC&#0098FFr&#00A0FFa&#00A8FFt&#00B0FFe&#00B7FF]&r ";
+    private static final Path KEYS_FILE = DIR.resolve("keys.properties");
+    private static final Properties KEYS = new Properties();
     private static final String KEY_TAG = "shadowcrates_key_type";
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
     private static final int ANIMATION_TICKS = 100;
@@ -101,6 +103,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadRewards();
             loadSettings();
             loadHolograms();
+            loadKeys();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
@@ -260,6 +263,28 @@ public final class AbyssCrateFabric implements ModInitializer {
                                             IntegerArgumentType.getInteger(ctx, "removeLine"));
                                     return 1;
                                 }))))));
+            // 3P.1: Custom key design commands; only admins can change key appearance.
+            dispatcher.register(Commands.literal("crate")
+                .then(Commands.literal("key")
+                    .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .then(Commands.argument("name", StringArgumentType.word())
+                        .then(Commands.literal("name")
+                            .then(Commands.argument("text", StringArgumentType.greedyString())
+                                .executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "name", StringArgumentType.getString(ctx, "text")))))
+                        .then(Commands.literal("material")
+                            .then(Commands.argument("item", StringArgumentType.word())
+                                .executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "material", StringArgumentType.getString(ctx, "item")))))
+                        .then(Commands.literal("glint")
+                            .then(Commands.literal("on").executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "glint", "true")))
+                            .then(Commands.literal("off").executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "glint", "false"))))
+                        .then(Commands.literal("lore")
+                            .then(Commands.literal("add")
+                                .then(Commands.argument("line", IntegerArgumentType.integer(1, 10))
+                                    .then(Commands.argument("text", StringArgumentType.greedyString())
+                                        .executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "lore." + IntegerArgumentType.getInteger(ctx, "line"), StringArgumentType.getString(ctx, "text"))))))
+                            .then(Commands.literal("remove")
+                                .then(Commands.argument("line", IntegerArgumentType.integer(1, 10))
+                                    .executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "lore." + IntegerArgumentType.getInteger(ctx, "line"), ""))))))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("editor")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
@@ -409,6 +434,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadRewards();
             loadSettings();
             loadHolograms();
+            loadKeys();
                         hologramRefreshNeeded = true;
                         reply(ctx.getSource(), "reloaded", "");
                         return 1;
@@ -450,6 +476,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(12, button(Items.CHEST, "View Rewards"));
         view.setItem(14, button(Items.COMPARATOR, "Change Chance - select reward"));
         view.setItem(16, button(Items.COMPARATOR, "Crate Settings"));
+        view.setItem(20, button(Items.TRIPWIRE_HOOK, "Custom Key Editor"));
         view.setItem(22, button(Items.BARRIER, "Close"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
@@ -457,6 +484,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     if (slot == 10) openAddEditor(admin, crate);
                     else if (slot == 12 || slot == 14) openRewardsEditor(admin, crate, 0);
                     else if (slot == 16) openCrateSettings(admin, crate);
+                    else if (slot == 20) openKeyEditor(admin, crate);
                     else if (slot == 22) admin.closeContainer();
                     return;
                 }
@@ -520,9 +548,9 @@ public final class AbyssCrateFabric implements ModInitializer {
 
     private static void openHologramEditor(ServerPlayer admin, String crate) {
         SimpleContainer view = new SimpleContainer(27);
-        view.setItem(10, button(Items.NAME_TAG, "Line 1: /crate hologram " + crate + " 1 <text>"));
-        view.setItem(11, button(Items.PAPER, "Line 2: /crate hologram " + crate + " 2 <text>"));
-        view.setItem(12, button(Items.PAPER, "Lines 1-10: /crate hologram " + crate + " <1-10> <text>"));
+        view.setItem(10, button(Items.NAME_TAG, "Line 1: /crate hologram " + crate + " add 1 <text>"));
+        view.setItem(11, button(Items.PAPER, "Line 2: /crate hologram " + crate + " add 2 <text>"));
+        view.setItem(12, button(Items.PAPER, "Lines 1-10: /crate hologram " + crate + " add <1-10> <text>"));
         view.setItem(14, button(Items.ARROW, "Height: " + settingInt(crate, "hologram-height", 0) + " cm (click +10, right click -10)"));
         view.setItem(15, button(Items.SPYGLASS, "Scale: " + settingInt(crate, "hologram-scale", 50) + "% (click +10, right click -10)"));
         view.setItem(22, button(Items.BARRIER, "Back to Settings"));
@@ -1178,20 +1206,120 @@ public final class AbyssCrateFabric implements ModInitializer {
         }
     }
 
+    // 3P.1: Key identity is independent of material/name/glint.
+    private static synchronized void loadKeys() throws IOException {
+        Files.createDirectories(DIR);
+        KEYS.clear();
+        if (Files.exists(KEYS_FILE)) try (InputStream in = Files.newInputStream(KEYS_FILE)) { KEYS.load(in); }
+    }
+
+    private static synchronized void saveKeys() throws IOException {
+        Files.createDirectories(DIR);
+        try (OutputStream out = Files.newOutputStream(KEYS_FILE)) { KEYS.store(out, "AbyssCrate custom keys - supports HEX and Birdflop gradients"); }
+    }
+
+    private static synchronized String keySetting(String crate, String field, String fallback) {
+        return KEYS.getProperty(crate + "." + field, fallback);
+    }
+
+    private static Item keyMaterial(String crate) {
+        try {
+            Item item = BuiltInRegistries.ITEM.getValue(Identifier.parse(keySetting(crate, "material", "minecraft:tripwire_hook")));
+            return item == null || item == Items.AIR ? Items.TRIPWIRE_HOOK : item;
+        } catch (Exception ex) { return Items.TRIPWIRE_HOOK; }
+    }
+
     private static ItemStack createKey(String name, int amount) {
-        ItemStack stack = new ItemStack(Items.TRIPWIRE_HOOK, amount);
+        ItemStack stack = new ItemStack(keyMaterial(name), amount);
         CompoundTag tag = new CompoundTag();
         tag.putString(KEY_TAG, name);
         CustomData.set(DataComponents.CUSTOM_DATA, stack, tag);
-        stack.set(DataComponents.CUSTOM_NAME, Component.literal("Cheie " + name.toUpperCase(Locale.ROOT)));
+        stack.set(DataComponents.CUSTOM_NAME, colored(keySetting(name, "name", "Cheie " + name.toUpperCase(Locale.ROOT))));
+        List<Component> lore = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            String line = keySetting(name, "lore." + i, "");
+            if (!line.isEmpty()) lore.add(colored(line));
+        }
+        if (!lore.isEmpty()) stack.set(DataComponents.LORE, new ItemLore(lore));
+        stack.set(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, Boolean.parseBoolean(keySetting(name, "glint", "false")));
         return stack;
     }
 
     private static boolean isKeyFor(ItemStack stack, String name) {
-        if (!stack.is(Items.TRIPWIRE_HOOK)) return false;
+        // Do not require a specific material: old issued keys stay valid after design changes.
+        if (stack.isEmpty()) return false;
         CustomData data = stack.get(DataComponents.CUSTOM_DATA);
         if (data == null) return false;
         return data.copyTag().getString(KEY_TAG).map(name::equals).orElse(false);
+    }
+
+    private static int updateKeyCommand(net.minecraft.commands.CommandSourceStack source, String rawCrate, String field, String value) {
+        String crate = rawCrate.toLowerCase(Locale.ROOT);
+        synchronized (CRATES) {
+            if (!CRATES.containsKey(crate)) { reply(source, "not-found", crate); return 0; }
+        }
+        if (value.length() > 240 || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0) {
+            source.sendFailure(Component.literal("Maximum 240 caractere pe camp.")); return 0;
+        }
+        if (field.equals("material")) {
+            try {
+                Item item = BuiltInRegistries.ITEM.getValue(Identifier.parse(value));
+                if (item == null || item == Items.AIR) throw new IllegalArgumentException("Unknown item");
+                value = BuiltInRegistries.ITEM.getKey(item).toString();
+            } catch (Exception ex) { source.sendFailure(Component.literal("Material invalid: " + value)); return 0; }
+        }
+        if (!saveKeyField(crate, field, value)) {
+            source.sendFailure(Component.literal("Nu am putut salva keys.properties.")); return 0;
+        }
+        source.sendSuccess(() -> Component.literal("[AbyssCrate] Cheia " + crate + ": " + field + " actualizat."), false);
+        return 1;
+    }
+
+    private static synchronized boolean saveKeyField(String crate, String field, String value) {
+        String property = crate + "." + field;
+        Object previous = KEYS.setProperty(property, value);
+        try { saveKeys(); return true; }
+        catch (IOException ex) {
+            if (previous == null) KEYS.remove(property); else KEYS.put(property, previous);
+            return false;
+        }
+    }
+
+    private static void openKeyEditor(ServerPlayer admin, String crate) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(10, button(Items.NAME_TAG, "Name: " + keySetting(crate, "name", "Cheie " + crate) + " | click: copy held item name"));
+        view.setItem(11, button(Items.BOOK, "Lore | click: copy held item lore (max 10 lines)"));
+        view.setItem(12, button(keyMaterial(crate), "Material: " + keySetting(crate, "material", "minecraft:tripwire_hook") + " | click: use held item"));
+        view.setItem(13, button(Items.ENCHANTED_BOOK, "Glint: " + (Boolean.parseBoolean(keySetting(crate, "glint", "false")) ? "ON" : "OFF") + " | click: toggle"));
+        view.setItem(15, createKey(crate, 1));
+        view.setItem(16, button(Items.PAPER, "For custom HEX name/lore use /crate key " + crate + " name/lore add"));
+        view.setItem(22, button(Items.ARROW, "Back to editor"));
+        admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) {
+                    if (slot == 22) { openMainEditor(admin, crate); return; }
+                    if (slot == 13) saveKeyField(crate, "glint", Boolean.toString(!Boolean.parseBoolean(keySetting(crate, "glint", "false"))));
+                    if (slot == 10 || slot == 11 || slot == 12) {
+                        ItemStack held = admin.getMainHandItem();
+                        if (held.isEmpty()) { admin.sendSystemMessage(Component.literal("[AbyssCrate] Tine un item in mana principala.")); return; }
+                        if (slot == 10) saveKeyField(crate, "name", held.getHoverName().getString());
+                        if (slot == 12) saveKeyField(crate, "material", BuiltInRegistries.ITEM.getKey(held.getItem()).toString());
+                        if (slot == 11) {
+                            ItemLore itemLore = held.get(DataComponents.LORE);
+                            if (itemLore == null || itemLore.lines().isEmpty()) {
+                                admin.sendSystemMessage(Component.literal("[AbyssCrate] Itemul nu are lore. Foloseste /crate key " + crate + " lore add <1-10> <text>."));
+                                return;
+                            }
+                            for (int i = 1; i <= 10; i++) saveKeyField(crate, "lore." + i, i <= itemLore.lines().size() ? itemLore.lines().get(i - 1).getString() : "");
+                        }
+                    }
+                    openKeyEditor(admin, crate);
+                    return;
+                }
+                super.clicked(slot, button, input, clicker);
+            }
+            @Override public ItemStack quickMoveStack(Player player, int slot) { return ItemStack.EMPTY; }
+        }, Component.literal("AbyssCrate Key | " + crate)));
     }
 
     private static String locationKey(String dimension, BlockPos pos) {
