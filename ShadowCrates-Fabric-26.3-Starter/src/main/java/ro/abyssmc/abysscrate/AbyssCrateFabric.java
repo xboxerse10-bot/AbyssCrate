@@ -102,7 +102,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             }
             held.shrink(1);
             player.sendSystemMessage(Component.literal(message("reward-won", name)
-                .replace("{item}", BuiltInRegistries.ITEM.getKey(selected.item()).toString())
+                .replace("{item}", prize.getHoverName().getString())
                 .replace("{amount}", Integer.toString(selected.count()))));
             return InteractionResult.SUCCESS;
         });
