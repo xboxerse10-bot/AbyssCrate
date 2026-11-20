@@ -47,6 +47,8 @@ import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Etapa 3A: administrare crate-uri + mesaje configurabile.
@@ -108,18 +110,18 @@ public final class AbyssCrateFabric implements ModInitializer {
                     openPlayerPreview(serverPlayer, name);
                     return InteractionResult.SUCCESS;
                 }
-                player.sendSystemMessage(Component.literal(message("needs-key", name)));
+                player.sendSystemMessage(colored(message("needs-key", name)));
                 return InteractionResult.SUCCESS;
             }
             RewardChoice selected = chooseReward(name);
             if (selected == null) {
-                player.sendSystemMessage(Component.literal(message("no-rewards", name)));
+                player.sendSystemMessage(colored(message("no-rewards", name)));
                 return InteractionResult.SUCCESS;
             }
             // For safety, require an empty inventory slot before awarding an item.
             // This prevents accidental item loss and avoids consuming a key on failure.
             if (!hasEmptyInventorySlot(serverPlayer)) {
-                player.sendSystemMessage(Component.literal(message("inventory-full", name)));
+                player.sendSystemMessage(colored(message("inventory-full", name)));
                 return InteractionResult.SUCCESS;
             }
             if (ACTIVE_OPENINGS.containsKey(serverPlayer.getUUID())) {
@@ -175,7 +177,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             synchronized (PLACEMENTS) {
                 if (!PLACEMENTS.containsKey(locationKey(world.dimension().identifier().toString(), pos))) return true;
             }
-            if (!world.isClientSide()) player.sendSystemMessage(Component.literal(message("protected", "")));
+            if (!world.isClientSide()) player.sendSystemMessage(colored(message("protected", "")));
             return false;
         });
 
@@ -343,7 +345,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     String message = names.isEmpty()
                         ? message("empty", "")
                         : message("list", String.join(", ", names));
-                    ctx.getSource().sendSuccess(() -> Component.literal(message), false);
+                    ctx.getSource().sendSuccess(() -> colored(message), false);
                     return 1;
                 })));
         });
@@ -655,7 +657,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static void finishMystery(ServerPlayer player, MysterySession session) {
         // A key is taken only when the reward can actually be delivered.
         if (!hasEmptyInventorySlot(player)) {
-            player.sendSystemMessage(Component.literal(message("inventory-full", session.crate)));
+            player.sendSystemMessage(colored(message("inventory-full", session.crate)));
             return;
         }
         int keySlot = -1;
@@ -666,13 +668,13 @@ public final class AbyssCrateFabric implements ModInitializer {
             }
         }
         if (keySlot == -1) {
-            player.sendSystemMessage(Component.literal(message("needs-key", session.crate)));
+            player.sendSystemMessage(colored(message("needs-key", session.crate)));
             return;
         }
         ItemStack prize = new ItemStack(session.prize.item(), session.prize.count());
         String displayName = prize.getHoverName().getString();
         if (!player.getInventory().add(prize)) {
-            player.sendSystemMessage(Component.literal(message("inventory-full", session.crate)));
+            player.sendSystemMessage(colored(message("inventory-full", session.crate)));
             return;
         }
         player.getInventory().getItem(keySlot).shrink(1);
@@ -680,8 +682,17 @@ public final class AbyssCrateFabric implements ModInitializer {
             .replace("{item}", displayName)
             .replace("{amount}", Integer.toString(session.prize.count()));
         if (settingBool(session.crate, "broadcast", false)) {
-            for (ServerPlayer onlinePlayer : player.level().getServer().getPlayerList().getPlayers()) {     onlinePlayer.sendSystemMessage(Component.literal(player.getName().getString() + " » " + winText)); }
-        } else player.sendSystemMessage(Component.literal(winText));
+            String broadcast = MESSAGES.getProperty("broadcast-win", "{prefix}Jucatorul {player} a castigat {amount} x {item} din crate-ul {crate}!")
+                .replace("{prefix}", MESSAGES.getProperty("prefix", "[AbyssCrate] "))
+                .replace("{player}", player.getName().getString())
+                .replace("{amount}", Integer.toString(session.prize.count()))
+                .replace("{item}", displayName)
+                .replace("{crate}", session.crate);
+            Component announcement = colored(broadcast);
+            for (ServerPlayer onlinePlayer : player.level().getServer().getPlayerList().getPlayers()) {
+                onlinePlayer.sendSystemMessage(announcement);
+            }
+        } else player.sendSystemMessage(colored(winText));
     }
 
     // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
@@ -791,7 +802,79 @@ public final class AbyssCrateFabric implements ModInitializer {
 
     private static void reply(net.minecraft.commands.CommandSourceStack source, String key, String value) {
         String output = message(key, value);
-        source.sendSuccess(() -> Component.literal(output), false);
+        source.sendSuccess(() -> colored(output), false);
+    }
+
+    // 3K: Minecraft text formatting for messages.properties.
+    // Supports &#RRGGBB, &l (bold), &o (italic), &n (underline), &m (strikethrough),
+    // &r (reset), and <gradient:#RRGGBB:#RRGGBB>text</gradient>.
+    private static final Pattern GRADIENT = Pattern.compile("(?i)<gradient:#([0-9a-f]{6}):#([0-9a-f]{6})>(.*?)</gradient>", Pattern.DOTALL);
+    private static final Pattern COLOR_TOKEN = Pattern.compile("(?i)&#([0-9a-f]{6})|&([0-9a-fk-or])");
+
+    private static Component colored(String input) {
+        var output = Component.empty();
+        Matcher gradient = GRADIENT.matcher(input);
+        int pos = 0;
+        while (gradient.find()) {
+            appendFormatted(output, input.substring(pos, gradient.start()));
+            String body = gradient.group(3);
+            int start = Integer.parseInt(gradient.group(1), 16);
+            int end = Integer.parseInt(gradient.group(2), 16);
+            int length = body.codePointCount(0, body.length());
+            int index = 0;
+            for (int offset = 0; offset < body.length();) {
+                int cp = body.codePointAt(offset);
+                double t = length <= 1 ? 0.0 : (double) index / (length - 1);
+                int red = (int) Math.round(((start >> 16) & 255) * (1 - t) + ((end >> 16) & 255) * t);
+                int green = (int) Math.round(((start >> 8) & 255) * (1 - t) + ((end >> 8) & 255) * t);
+                int blue = (int) Math.round((start & 255) * (1 - t) + (end & 255) * t);
+                output.append(Component.literal(new String(Character.toChars(cp)))
+                    .withStyle(style -> style.withColor((red << 16) | (green << 8) | blue)));
+                offset += Character.charCount(cp);
+                index++;
+            }
+            pos = gradient.end();
+        }
+        appendFormatted(output, input.substring(pos));
+        return output;
+    }
+
+    private static void appendFormatted(net.minecraft.network.chat.MutableComponent output, String input) {
+        Matcher token = COLOR_TOKEN.matcher(input);
+        net.minecraft.network.chat.Style style = net.minecraft.network.chat.Style.EMPTY;
+        int pos = 0;
+        while (token.find()) {
+            if (token.start() > pos) {
+                output.append(Component.literal(input.substring(pos, token.start())).setStyle(style));
+            }
+            if (token.group(1) != null) {
+                int rgb = Integer.parseInt(token.group(1), 16);
+                style = style.withColor(rgb);
+            } else {
+                char code = Character.toLowerCase(token.group(2).charAt(0));
+                switch (code) {
+                    case 'l' -> style = style.withBold(true);
+                    case 'o' -> style = style.withItalic(true);
+                    case 'n' -> style = style.withUnderlined(true);
+                    case 'm' -> style = style.withStrikethrough(true);
+                    case 'k' -> style = style.withObfuscated(true);
+                    case 'r' -> style = net.minecraft.network.chat.Style.EMPTY;
+                    default -> {
+                        int rgb = switch (code) {
+                            case '0' -> 0x000000; case '1' -> 0x0000AA; case '2' -> 0x00AA00;
+                            case '3' -> 0x00AAAA; case '4' -> 0xAA0000; case '5' -> 0xAA00AA;
+                            case '6' -> 0xFFAA00; case '7' -> 0xAAAAAA; case '8' -> 0x555555;
+                            case '9' -> 0x5555FF; case 'a' -> 0x55FF55; case 'b' -> 0x55FFFF;
+                            case 'c' -> 0xFF5555; case 'd' -> 0xFF55FF; case 'e' -> 0xFFFF55;
+                            default -> 0xFFFFFF;
+                        };
+                        style = net.minecraft.network.chat.Style.EMPTY.withColor(rgb);
+                    }
+                }
+            }
+            pos = token.end();
+        }
+        if (pos < input.length()) output.append(Component.literal(input.substring(pos)).setStyle(style));
     }
 
     private static synchronized String message(String key, String value) {
@@ -822,6 +905,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static synchronized void loadMessages() throws IOException {
         Properties defaults = new Properties();
         defaults.setProperty("prefix", "[AbyssCrate] ");
+        defaults.setProperty("broadcast-win", "{prefix}Jucatorul {player} a castigat {amount} x {item} din crate-ul {crate}!");
         defaults.setProperty("block-set", "Bloc asociat crate-ului {crate}.");
         defaults.setProperty("block-unset", "Blocul nu mai este un crate ({crate}).");
         defaults.setProperty("look-at-block", "Priveste un bloc aflat la maximum 5 blocuri distanta.");
