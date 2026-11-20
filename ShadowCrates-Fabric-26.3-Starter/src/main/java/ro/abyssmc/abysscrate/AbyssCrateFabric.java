@@ -714,9 +714,9 @@ public final class AbyssCrateFabric implements ModInitializer {
         if (start < text.length()) {
             segments.add(hologramSegment(text.substring(start), color, bold, italic, underlined, strikethrough, obfuscated));
         }
-        if (segments.isEmpty()) return "{text:\\"\\"}";
+        if (segments.isEmpty()) return "{text:\"\"}";
         if (segments.size() == 1) return segments.get(0);
-        return "{text:\\"\\",extra:[" + String.join(",", segments) + "]}";
+        return "{text:\"\",extra:[" + String.join(",", segments) + "]}";
     }
 
     private static String hologramSegment(String value, String color, boolean bold, boolean italic,
