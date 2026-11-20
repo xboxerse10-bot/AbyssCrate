@@ -676,10 +676,15 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static ItemStack hubButton(Item item, String name, String... description) {
-        ItemStack stack = button(item, name);
+        ItemStack stack = new ItemStack(item);
+        // The hub uses the existing formatting parser (legacy &, hex and gradients).
+        // Explicitly disable Minecraft's default italic styling for custom names/lore.
+        stack.set(DataComponents.CUSTOM_NAME, colored(name).copy().withStyle(style -> style.withItalic(false)));
         List<Component> lines = new ArrayList<>();
-        for (String line : description) lines.add(colored(line));
+        for (String line : description) lines.add(colored(line).copy().withStyle(style -> style.withItalic(false)));
         stack.set(DataComponents.LORE, new ItemLore(lines));
+        // Display-only items must not show sword attack damage / speed in the hub.
+        stack.set(DataComponents.ATTRIBUTE_MODIFIERS, net.minecraft.world.item.component.ItemAttributeModifiers.EMPTY);
         return stack;
     }
 
@@ -687,7 +692,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         for (int slot = 0; slot < 54; slot++) {
             int row = slot / 9, col = slot % 9;
             if (Boolean.parseBoolean(hubValue("frame.enabled", "true")) && (row == 0 || row == 5 || col == 0 || col == 8))
-                view.setItem(slot, button(hubMaterial("frame.material", Items.QUARTZ_BLOCK), hubValue("frame.name", " ")));
+                view.setItem(slot, hubButton(hubMaterial("frame.material", Items.QUARTZ_BLOCK), hubValue("frame.name", " ")));
         }
     }
 
