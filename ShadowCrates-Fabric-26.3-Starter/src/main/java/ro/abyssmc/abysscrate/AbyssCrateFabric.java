@@ -505,19 +505,29 @@ public final class AbyssCrateFabric implements ModInitializer {
                 String dim = parts[0];
                 if (!dim.matches("[a-z0-9_:.\\/-]+")) continue;
                 String tag = "abyss_h_" + Integer.toUnsignedString(entry.getKey().hashCode(), 36);
-                // Remove only our own label at this location, then rebuild it.
-                String pos = (x + 0.5) + " " + (y + 1.75) + " " + (z + 0.5);
-                String prefix = "execute in " + dim + " positioned " + pos + " run ";
-                runHologramCommand(server, prefix + "kill @e[type=minecraft:text_display,tag=" + tag + ",distance=..0.2]");
+                // Clear only displays belonging to this crate, including older 3L labels.
+                String center = (x + 0.5) + " " + (y + 1.75) + " " + (z + 0.5);
+                String base = "execute in " + dim + " positioned " + center + " run ";
+                runHologramCommand(server, base + "kill @e[type=minecraft:text_display,tag=" + tag + ",distance=..1.5]");
                 if (!settingBool(entry.getValue(), "hologram", true)) continue;
                 String name = displayName(entry.getValue()).replaceAll("[^a-zA-Z0-9 _-]", "");
-                // Minecraft 26.3 expects an SNBT text component, not a JSON string.
-                // Keep the label compact and place each line within one display entity.
-                String textComponent = "{text:\"✦ " + name + " ✦\",color:\"aqua\",bold:true,extra:["
-                        + "{text:\"\\nRight Click to Open\",color:\"white\",bold:false},"
-                        + "{text:\"\\nLeft Click to Preview\",color:\"gray\",bold:false}]}";
-                String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],billboard:\"center\",alignment:\"center\",see_through:1b,background:0,transformation:{scale:[0.5f,0.5f,0.5f]},text:" + textComponent + "}";
-                runHologramCommand(server, prefix + "summon minecraft:text_display ~ ~ ~ " + nbt);
+                // Plain text avoids the SNBT/JSON component incompatibility in 26.3.
+                // Separate displays keep the rows properly spaced and centered.
+                String[] lines = {"✦ " + name + " ✦", "Right Click to Open", "Left Click to Preview"};
+                int[] colors = {0x00B7FF, 0xFFFFFF, 0xAAAAAA};
+                double[] offsets = {0.28, 0.06, -0.16};
+                for (int line = 0; line < lines.length; line++) {
+                    String label = lines[line].replace("\\", "\\\\").replace("\"", "\\\"");
+                    String pos = (x + 0.5) + " " + (y + 1.75 + offsets[line]) + " " + (z + 0.5);
+                    String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],"
+                            + "billboard:\"center\",alignment:\"center\",see_through:1b,"
+                            + "background:0,text_color:" + colors[line] + ","
+                            + "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],"
+                            + "scale:[0.5f,0.5f,0.5f],right_rotation:[0f,0f,0f,1f]},"
+                            + "text:\"" + label + "\"}";
+                    runHologramCommand(server, "execute in " + dim + " positioned " + pos
+                            + " run summon minecraft:text_display ~ ~ ~ " + nbt);
+                }
             } catch (RuntimeException ignored) { }
         }
     }
