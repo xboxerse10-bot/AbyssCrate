@@ -71,6 +71,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
     private static final int ANIMATION_TICKS = 100;
     private static final int REVEAL_TICKS = 20;
+    private static int effectsTick = 0;
     private static int hologramTick = 0;
     private static boolean hologramRefreshNeeded = true;
 
@@ -135,6 +136,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                 finishMystery(serverPlayer, new MysterySession(name, selected));
                 return InteractionResult.SUCCESS;
             }
+            playCrateEffect(serverPlayer, name, "open");
             MysterySession session = new MysterySession(name, selected);
             ACTIVE_OPENINGS.put(serverPlayer.getUUID(), session);
             renderMystery(session, false);
@@ -150,6 +152,11 @@ public final class AbyssCrateFabric implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
+            // Lightweight ambient particles every second, only near players.
+            if (++effectsTick >= 20) {
+                effectsTick = 0;
+                tickAmbientEffects(server);
+            }
             // Reconcile floating labels periodically, including after chunk loads.
             if (++hologramTick >= 600 || hologramRefreshNeeded) {
                 hologramTick = 0;
@@ -169,10 +176,12 @@ public final class AbyssCrateFabric implements ModInitializer {
                 session.ticks++;
                 if (session.ticks <= session.duration && session.ticks % animationInterval(session.ticks, session.duration) == 0) {
                     renderMystery(session, false);
+                    playCrateEffect(openingPlayer, session.crate, "tick");
                     openingPlayer.containerMenu.broadcastChanges();
                 }
                 if (session.ticks == session.duration + 1) {
                     renderMystery(session, true);
+                    playCrateEffect(openingPlayer, session.crate, "reveal");
                     openingPlayer.containerMenu.broadcastChanges();
                 }
                 if (session.ticks >= session.duration + REVEAL_TICKS) {
@@ -453,7 +462,9 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(10, button(Items.NAME_TAG, "Display Name: " + displayName(crate) + " (click: cycle)"));
         view.setItem(11, button(Items.NETHER_STAR, "Animation: " + (settingBool(crate, "animation", true) ? "ON" : "OFF")));
         view.setItem(12, button(Items.CLOCK, "Duration: " + (settingInt(crate, "duration", 100) / 20) + " seconds"));
-        view.setItem(13, button(Items.NOTE_BLOCK, "Sound effects: planned for 3K"));
+        view.setItem(13, button(Items.NOTE_BLOCK, "Sounds: " + (settingBool(crate, "sounds", true) ? "ON" : "OFF") + " (click to toggle)"));
+        view.setItem(16, button(Items.BLAZE_POWDER, "Particles: " + (settingBool(crate, "effects", true) ? "ON" : "OFF") + " (click to toggle)"));
+        view.setItem(21, button(Items.AMETHYST_SHARD, "Particle Style: " + effectStyle(crate) + " (click to cycle)"));
         view.setItem(14, button(Items.PAPER, "Broadcast Win: " + (settingBool(crate, "broadcast", false) ? "ON" : "OFF")));
         view.setItem(15, button(Items.CHEST, "Preview Rewards: " + (settingBool(crate, "preview", true) ? "ON" : "OFF")));
         view.setItem(20, button(Items.END_ROD, "Hologram: " + (settingBool(crate, "hologram", true) ? "ON" : "OFF")));
@@ -472,7 +483,13 @@ public final class AbyssCrateFabric implements ModInitializer {
                             int seconds = settingInt(crate, "duration", 100) / 20;
                             changeSetting(admin, crate, "duration", Integer.toString((seconds >= 10 ? 3 : seconds + 1) * 20));
                         }
-                        case 13 -> admin.sendSystemMessage(Component.literal("[AbyssCrate] Sunetele vor fi adaugate intr-o versiune viitoare."));
+                        case 13 -> changeSetting(admin, crate, "sounds", Boolean.toString(!settingBool(crate, "sounds", true)));
+                        case 16 -> changeSetting(admin, crate, "effects", Boolean.toString(!settingBool(crate, "effects", true)));
+                        case 21 -> changeSetting(admin, crate, "effect-style", switch (effectStyle(crate)) {
+                            case "MAGIC_BLUE" -> "LEGENDARY_GOLD";
+                            case "LEGENDARY_GOLD" -> "DARK_ABYSS";
+                            default -> "MAGIC_BLUE";
+                        });
                         case 14 -> changeSetting(admin, crate, "broadcast", Boolean.toString(!settingBool(crate, "broadcast", false)));
                         case 15 -> changeSetting(admin, crate, "preview", Boolean.toString(!settingBool(crate, "preview", true)));
                         case 20 -> changeSetting(admin, crate, "hologram", Boolean.toString(!settingBool(crate, "hologram", true)));
@@ -486,6 +503,76 @@ public final class AbyssCrateFabric implements ModInitializer {
         }, Component.literal("AbyssCrate Settings | " + crate)));
     }
 
+
+    // 3M: Effects are server-side commands; no client mod or extra dependency needed.
+    // Each crate has independent toggles and one of three visual themes.
+    private static String effectStyle(String crate) {
+        String style = setting(crate, "effect-style", "MAGIC_BLUE").toUpperCase(Locale.ROOT);
+        return switch (style) {
+            case "LEGENDARY_GOLD", "DARK_ABYSS" -> style;
+            default -> "MAGIC_BLUE";
+        };
+    }
+
+    private static String effectParticle(String crate) {
+        return switch (effectStyle(crate)) {
+            case "LEGENDARY_GOLD" -> "minecraft:flame";
+            case "DARK_ABYSS" -> "minecraft:portal";
+            default -> "minecraft:soul_fire_flame";
+        };
+    }
+
+    private static String effectSound(String crate, String phase) {
+        if ("tick".equals(phase)) return "minecraft:block.note_block.hat";
+        if ("win".equals(phase) || "reveal".equals(phase)) return "minecraft:entity.player.levelup";
+        return switch (effectStyle(crate)) {
+            case "LEGENDARY_GOLD" -> "minecraft:block.amethyst_block.chime";
+            case "DARK_ABYSS" -> "minecraft:block.portal.trigger";
+            default -> "minecraft:block.enchantment_table.use";
+        };
+    }
+
+    private static void playCrateEffect(ServerPlayer player, String crate, String phase) {
+        var server = player.level().getServer();
+        if (server == null) return;
+        String name = player.getGameProfile().name();
+        // Players' names are Minecraft-validated; the command never contains config text.
+        if (!name.matches("[A-Za-z0-9_]{1,16}")) return;
+        if (settingBool(crate, "sounds", true)) {
+            String sound = effectSound(crate, phase);
+            String pitch = "tick".equals(phase) ? "1.5" : "1";
+            runHologramCommand(server, "execute as " + name + " at @s run playsound " + sound
+                    + " master @s ~ ~ ~ 0.6 " + pitch);
+        }
+        if (settingBool(crate, "effects", true) && !"tick".equals(phase)) {
+            runHologramCommand(server, "execute as " + name + " at @s run particle "
+                    + effectParticle(crate) + " ~ ~1 ~ 0.35 0.5 0.35 0.04 16 force");
+        }
+    }
+
+    private static void tickAmbientEffects(net.minecraft.server.MinecraftServer server) {
+        Map<String, String> snapshot = new HashMap<>();
+        synchronized (PLACEMENTS) {
+            for (String key : PLACEMENTS.stringPropertyNames()) snapshot.put(key, PLACEMENTS.getProperty(key));
+        }
+        for (var entry : snapshot.entrySet()) {
+            String crate = entry.getValue();
+            if (!settingBool(crate, "effects", true)) continue;
+            String[] parts = entry.getKey().split("\\|", 2);
+            if (parts.length != 2 || !parts[0].matches("[a-z0-9_:.\\/-]+")) continue;
+            String[] xyz = parts[1].split(",");
+            if (xyz.length != 3) continue;
+            try {
+                int x = Integer.parseInt(xyz[0]);
+                int y = Integer.parseInt(xyz[1]);
+                int z = Integer.parseInt(xyz[2]);
+                String pos = (x + 0.5) + " " + (y + 1.1) + " " + (z + 0.5);
+                runHologramCommand(server, "execute in " + parts[0] + " positioned " + pos
+                        + " if entity @a[distance=..24] run particle " + effectParticle(crate)
+                        + " ~ ~ ~ 0.25 0.3 0.25 0.01 3 normal");
+            } catch (NumberFormatException ignored) { }
+        }
+    }
 
     // 3L.2: Text Display holograms. Text is a structured component in modern Minecraft.
     private static void refreshHolograms(net.minecraft.server.MinecraftServer server) {
@@ -747,6 +834,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             return;
         }
         player.getInventory().getItem(keySlot).shrink(1);
+        playCrateEffect(player, session.crate, "win");
         String winText = message("reward-won", session.crate)
             .replace("{item}", displayName)
             .replace("{amount}", Integer.toString(session.prize.count()));
