@@ -648,26 +648,82 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static String hologramComponent(String text, String fallbackColor) {
-        // Emit an SNBT text-component compound with per-segment HEX colors.
-        java.util.List<String> segments = new ArrayList<>();
-        Pattern pattern = Pattern.compile("(?i)&#([0-9a-f]{6})|&([lor])");
-        Matcher matcher = pattern.matcher(text);
-        String color = fallbackColor;
-        boolean bold = false;
-        int start = 0;
-        while (matcher.find()) {
-            if (matcher.start() > start) {
-                segments.add("{text:" + snbtQuote(text.substring(start, matcher.start())) + ",color:" + snbtQuote(color) + ",bold:" + bold + "}");
+        // 3R.5.1: Support legacy & colors, HEX, formatting and Birdflop gradients in Text Displays.
+        // Build a structured SNBT component rather than displaying formatting tokens literally.
+        Matcher gradient = Pattern.compile("(?i)<gradient:#([0-9a-f]{6}):#([0-9a-f]{6})>(.*?)</gradient>", Pattern.DOTALL).matcher(text);
+        StringBuffer expanded = new StringBuffer();
+        while (gradient.find()) {
+            String body = gradient.group(3);
+            int from = Integer.parseInt(gradient.group(1), 16);
+            int to = Integer.parseInt(gradient.group(2), 16);
+            int count = body.codePointCount(0, body.length());
+            StringBuilder coloredBody = new StringBuilder();
+            int i = 0;
+            for (int off = 0; off < body.length();) {
+                int cp = body.codePointAt(off);
+                double t = count <= 1 ? 0 : (double)i / (count - 1);
+                int r = (int)Math.round(((from >> 16) & 255) * (1-t) + ((to >> 16) & 255) * t);
+                int g = (int)Math.round(((from >> 8) & 255) * (1-t) + ((to >> 8) & 255) * t);
+                int bl = (int)Math.round((from & 255) * (1-t) + (to & 255) * t);
+                coloredBody.append(String.format(Locale.ROOT, "&#%02X%02X%02X", r, g, bl));
+                coloredBody.appendCodePoint(cp);
+                off += Character.charCount(cp);
+                i++;
             }
-            if (matcher.group(1) != null) color = "#" + matcher.group(1).toUpperCase(Locale.ROOT);
-            else if (matcher.group(2).equalsIgnoreCase("l")) bold = true;
-            else if (matcher.group(2).equalsIgnoreCase("r")) { bold = false; color = fallbackColor; }
-            start = matcher.end();
+            gradient.appendReplacement(expanded, Matcher.quoteReplacement(coloredBody.toString()));
         }
-        if (start < text.length()) segments.add("{text:" + snbtQuote(text.substring(start)) + ",color:" + snbtQuote(color) + ",bold:" + bold + "}");
-        if (segments.isEmpty()) return "{text:\"\"}";
+        gradient.appendTail(expanded);
+        text = expanded.toString();
+
+        List<String> segments = new ArrayList<>();
+        Matcher token = Pattern.compile("(?i)&#([0-9a-f]{6})|&([0-9a-fk-or])").matcher(text);
+        String color = fallbackColor;
+        boolean bold = false, italic = false, underlined = false, strikethrough = false, obfuscated = false;
+        int start = 0;
+        while (token.find()) {
+            if (token.start() > start) {
+                segments.add(hologramSegment(text.substring(start, token.start()), color, bold, italic, underlined, strikethrough, obfuscated));
+            }
+            if (token.group(1) != null) {
+                color = "#" + token.group(1).toUpperCase(Locale.ROOT);
+                bold = italic = underlined = strikethrough = obfuscated = false;
+            } else {
+                char code = Character.toLowerCase(token.group(2).charAt(0));
+                switch (code) {
+                    case 'l' -> bold = true;
+                    case 'o' -> italic = true;
+                    case 'n' -> underlined = true;
+                    case 'm' -> strikethrough = true;
+                    case 'k' -> obfuscated = true;
+                    case 'r' -> { color = fallbackColor; bold = italic = underlined = strikethrough = obfuscated = false; }
+                    default -> {
+                        color = switch (code) {
+                            case '0' -> "#000000"; case '1' -> "#0000AA"; case '2' -> "#00AA00";
+                            case '3' -> "#00AAAA"; case '4' -> "#AA0000"; case '5' -> "#AA00AA";
+                            case '6' -> "#FFAA00"; case '7' -> "#AAAAAA"; case '8' -> "#555555";
+                            case '9' -> "#5555FF"; case 'a' -> "#55FF55"; case 'b' -> "#55FFFF";
+                            case 'c' -> "#FF5555"; case 'd' -> "#FF55FF"; case 'e' -> "#FFFF55";
+                            case 'f' -> "#FFFFFF"; default -> fallbackColor;
+                        };
+                        bold = italic = underlined = strikethrough = obfuscated = false;
+                    }
+                }
+            }
+            start = token.end();
+        }
+        if (start < text.length()) {
+            segments.add(hologramSegment(text.substring(start), color, bold, italic, underlined, strikethrough, obfuscated));
+        }
+        if (segments.isEmpty()) return "{text:\\"\\"}";
         if (segments.size() == 1) return segments.get(0);
-        return "{text:\"\",extra:[" + String.join(",", segments) + "]}";
+        return "{text:\\"\\",extra:[" + String.join(",", segments) + "]}";
+    }
+
+    private static String hologramSegment(String value, String color, boolean bold, boolean italic,
+                                          boolean underlined, boolean strikethrough, boolean obfuscated) {
+        return "{text:" + snbtQuote(value) + ",color:" + snbtQuote(color)
+                + ",bold:" + bold + ",italic:" + italic + ",underlined:" + underlined
+                + ",strikethrough:" + strikethrough + ",obfuscated:" + obfuscated + "}";
     }
 
     // 3J: Per-crate settings persisted independently of rewards and placements.
