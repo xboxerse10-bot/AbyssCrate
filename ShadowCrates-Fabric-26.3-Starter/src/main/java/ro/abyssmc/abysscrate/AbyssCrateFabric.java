@@ -89,9 +89,13 @@ public final class AbyssCrateFabric implements ModInitializer {
         final int duration;
         final String style;
         final SimpleContainer display;
+        final String effectDimension;
+        final BlockPos effectPosition;
         int frame;
         int ticks;
-        MysterySession(String crate, RewardChoice prize) {
+        MysterySession(String crate, RewardChoice prize, String effectDimension, BlockPos effectPosition) {
+            this.effectDimension = effectDimension;
+            this.effectPosition = effectPosition.immutable();
             this.duration = Math.max(20, settingInt(crate, "duration", 100));
             this.style = animationStyle(crate);
             this.display = new SimpleContainer("ROULETTE".equals(style) ? 54 : 27);
@@ -160,11 +164,11 @@ public final class AbyssCrateFabric implements ModInitializer {
                 return InteractionResult.SUCCESS;
             }
             if (!settingBool(name, "animation", true)) {
-                finishMystery(serverPlayer, new MysterySession(name, selected));
+                finishMystery(serverPlayer, new MysterySession(name, selected, player.level().dimension().identifier().toString(), hit.getBlockPos()));
                 return InteractionResult.SUCCESS;
             }
             playCrateEffect(serverPlayer, name, "open");
-            MysterySession session = new MysterySession(name, selected);
+            MysterySession session = new MysterySession(name, selected, player.level().dimension().identifier().toString(), hit.getBlockPos());
             ACTIVE_OPENINGS.put(serverPlayer.getUUID(), session);
             renderMystery(session, false);
             serverPlayer.openMenu(new SimpleMenuProvider((id, inv, viewer) ->
@@ -204,6 +208,9 @@ public final class AbyssCrateFabric implements ModInitializer {
                 }
                 MysterySession session = entry.getValue();
                 session.ticks++;
+                if (session.ticks <= session.duration && session.ticks % 4 == 0) {
+                    tickOpeningEffect(server, session);
+                }
                 if (session.ticks <= session.duration && session.ticks % animationInterval(session.ticks, session.duration) == 0) {
                     renderMystery(session, false);
                     playCrateEffect(openingPlayer, session.crate, "tick");
@@ -757,6 +764,9 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(22, button(Items.ARROW, "Back"));
         view.setItem(23, button(Items.CLOCK, "Animation Style: " + animationStyle(crate) + " (click to cycle)"));
         view.setItem(24, button(Items.TOTEM_OF_UNDYING, "Rare Reward Effects: " + (settingBool(crate, "rare-effects", true) ? "ON" : "OFF")));
+        view.setItem(17, button(Items.ENDER_EYE, "Opening Effect: " + openingEffect(crate) + " (click to cycle)"));
+        view.setItem(18, button(Items.FIREWORK_ROCKET, "Final Burst: " + (settingBool(crate, "final-burst", true) ? "ON" : "OFF")));
+        view.setItem(25, button(Items.GLOWSTONE_DUST, "Effect Intensity: " + openingIntensity(crate) + " (click to cycle)"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
                 if (slot >= 0 && slot < 27) {
@@ -784,6 +794,18 @@ public final class AbyssCrateFabric implements ModInitializer {
                         case 19 -> openHologramEditor(admin, crate);
                         case 22 -> openMainEditor(admin, crate);
                         case 24 -> changeSetting(admin, crate, "rare-effects", Boolean.toString(!settingBool(crate, "rare-effects", true)));
+                        case 17 -> changeSetting(admin, crate, "opening-effect", switch (openingEffect(crate)) {
+                            case "OFF" -> "MAGIC_CIRCLE";
+                            case "MAGIC_CIRCLE" -> "ENERGY_BEAM";
+                            case "ENERGY_BEAM" -> "SPIRAL_VORTEX";
+                            default -> "OFF";
+                        });
+                        case 18 -> changeSetting(admin, crate, "final-burst", Boolean.toString(!settingBool(crate, "final-burst", true)));
+                        case 25 -> changeSetting(admin, crate, "effect-intensity", switch (openingIntensity(crate)) {
+                            case "LOW" -> "MEDIUM";
+                            case "MEDIUM" -> "HIGH";
+                            default -> "LOW";
+                        });
                         case 23 -> changeSetting(admin, crate, "animation_style", switch (animationStyle(crate)) {
                             case "CLASSIC" -> "ROULETTE";
                             case "ROULETTE" -> "EPIC";
@@ -798,6 +820,100 @@ public final class AbyssCrateFabric implements ModInitializer {
         }, Component.literal("AbyssCrate Settings | " + crate)));
     }
 
+
+    // 3Q.3: Server-side opening effects at the actual crate block (not the player's position).
+    // No entities, block changes or client-side resource packs required.
+    private static String openingEffect(String crate) {
+        String value = setting(crate, "opening-effect", "OFF").toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "MAGIC_CIRCLE", "ENERGY_BEAM", "SPIRAL_VORTEX" -> value;
+            default -> "OFF";
+        };
+    }
+
+    private static String openingIntensity(String crate) {
+        String value = setting(crate, "effect-intensity", "MEDIUM").toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "LOW", "HIGH" -> value;
+            default -> "MEDIUM";
+        };
+    }
+
+    private static int openingParticleBudget(String crate) {
+        return switch (openingIntensity(crate)) {
+            case "LOW" -> 8;
+            case "HIGH" -> 24;
+            default -> 14;
+        };
+    }
+
+    private static void particleAt(net.minecraft.server.MinecraftServer server, String dimension,
+                                   double x, double y, double z, String particle, int count) {
+        // Coordinates/dimension come from a server-validated block interaction.
+        if (!dimension.matches("[a-z0-9_:.\\/-]+")) return;
+        String position = String.format(Locale.ROOT, "%.3f %.3f %.3f", x, y, z);
+        runHologramCommand(server, "execute in " + dimension + " positioned " + position
+            + " if entity @a[distance=..32] run particle " + particle + " ~ ~ ~ 0 0 0 0 " + count + " normal");
+    }
+
+    private static void tickOpeningEffect(net.minecraft.server.MinecraftServer server, MysterySession session) {
+        if (!settingBool(session.crate, "effects", true)) return;
+        String style = openingEffect(session.crate);
+        if ("OFF".equals(style)) return;
+        int budget = openingParticleBudget(session.crate);
+        double cx = session.effectPosition.getX() + 0.5;
+        double cy = session.effectPosition.getY();
+        double cz = session.effectPosition.getZ() + 0.5;
+        String particle = effectParticle(session.crate);
+        double phase = session.ticks * 0.09;
+        for (int i = 0; i < budget; i++) {
+            double angle = (Math.PI * 2 * i / budget) + phase;
+            double x, y, z;
+            switch (style) {
+                case "ENERGY_BEAM" -> {
+                    x = cx + Math.cos(angle) * 0.13;
+                    y = cy + 0.3 + (2.7 * i / budget);
+                    z = cz + Math.sin(angle) * 0.13;
+                }
+                case "SPIRAL_VORTEX" -> {
+                    double height = 0.15 + 2.4 * i / budget;
+                    double spiral = angle * 1.8 + phase;
+                    x = cx + Math.cos(spiral) * 0.75;
+                    y = cy + height;
+                    z = cz + Math.sin(spiral) * 0.75;
+                }
+                default -> { // MAGIC_CIRCLE
+                    x = cx + Math.cos(angle) * 1.05;
+                    y = cy + 0.25 + 0.12 * Math.sin(angle * 2 + phase);
+                    z = cz + Math.sin(angle) * 1.05;
+                }
+            }
+            particleAt(server, session.effectDimension, x, y, z, particle, 1);
+        }
+    }
+
+    private static void finalOpeningBurst(ServerPlayer player, MysterySession session, String rarity) {
+        if (!settingBool(session.crate, "effects", true) || !settingBool(session.crate, "final-burst", true)) return;
+        var server = player.level().getServer();
+        if (server == null) return;
+        String particle = switch (rarity) {
+            case "RARE" -> "minecraft:happy_villager";
+            case "EPIC" -> "minecraft:witch";
+            case "LEGENDARY" -> "minecraft:end_rod";
+            default -> "minecraft:enchant";
+        };
+        int budget = openingParticleBudget(session.crate);
+        double cx = session.effectPosition.getX() + 0.5;
+        double cy = session.effectPosition.getY() + 1.0;
+        double cz = session.effectPosition.getZ() + 0.5;
+        for (int i = 0; i < budget; i++) {
+            double angle = 2 * Math.PI * i / budget;
+            double radius = 0.45 + 0.55 * (i % 3) / 2.0;
+            particleAt(server, session.effectDimension,
+                cx + Math.cos(angle) * radius, cy + 0.5 * Math.sin(angle * 2),
+                cz + Math.sin(angle) * radius, particle, 2);
+        }
+    }
 
     // 3M: Effects are server-side commands; no client mod or extra dependency needed.
     // Each crate has independent toggles and one of three visual themes.
@@ -1274,6 +1390,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         player.getInventory().getItem(keySlot).shrink(1);
         playCrateEffect(player, session.crate, "win");
         String rarity = rewardRarity(session.crate, session.prize.id());
+        finalOpeningBurst(player, session, rarity);
         if (settingBool(session.crate, "rare-effects", true)) {
             playRarityEffect(player, session.crate, rarity);
         }
