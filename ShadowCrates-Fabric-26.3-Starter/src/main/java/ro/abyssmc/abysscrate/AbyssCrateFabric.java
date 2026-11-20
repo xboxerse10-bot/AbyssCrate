@@ -63,6 +63,9 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Path HISTORY_FILE = STATS_DIR.resolve("history.properties");
     private static final Properties STATS = new Properties();
     private static final Properties HISTORY = new Properties();
+    // 3R.5: Two independently positioned, persistent live leaderboard holograms.
+    private static final Path TOP_HOLOGRAMS_FILE = Path.of("config", "AbyssCrate", "leaderboard-holograms.properties");
+    private static final Properties TOP_HOLOGRAMS = new Properties();
     private static final int MAX_HISTORY = 100;
     private static final Path DIR = Path.of("config", "AbyssCrate");
     private static final Path DATA = DIR.resolve("crates.properties");
@@ -123,6 +126,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadHolograms();
             loadKeys();
             loadStatistics();
+            loadTopHolograms();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
@@ -204,6 +208,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                 hologramTick = 0;
                 hologramRefreshNeeded = false;
                 refreshHolograms(server);
+                refreshTopHolograms(server);
             }
             var iterator = ACTIVE_OPENINGS.entrySet().iterator();
             while (iterator.hasNext()) {
@@ -258,6 +263,16 @@ public final class AbyssCrateFabric implements ModInitializer {
                         .executes(ctx -> { ServerPlayer target = EntityArgument.getPlayer(ctx, "player"); openHistory(ctx.getSource().getPlayerOrException(), target.getUUID(), target.getName().getString(), 0); return 1; })))
                 .then(Commands.literal("top")
                     .executes(ctx -> { openLeaderboard(ctx.getSource().getPlayerOrException(), false); return 1; }))
+                .then(Commands.literal("hologramtop")
+                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .then(Commands.literal("set").executes(ctx -> setTopHologram(ctx.getSource().getPlayerOrException(), "top")))
+                    .then(Commands.literal("remove").executes(ctx -> removeTopHologram(ctx.getSource().getPlayerOrException(), "top")))
+                    .then(Commands.literal("refresh").executes(ctx -> { refreshTopHolograms(ctx.getSource().getServer()); return 1; })))
+                .then(Commands.literal("hologramwins")
+                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .then(Commands.literal("set").executes(ctx -> setTopHologram(ctx.getSource().getPlayerOrException(), "wins")))
+                    .then(Commands.literal("remove").executes(ctx -> removeTopHologram(ctx.getSource().getPlayerOrException(), "wins")))
+                    .then(Commands.literal("refresh").executes(ctx -> { refreshTopHolograms(ctx.getSource().getServer()); return 1; })))
                 .then(Commands.literal("adminstats")
                     .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
                     .executes(ctx -> { openAdminStatistics(ctx.getSource().getPlayerOrException()); return 1; })));
@@ -1449,6 +1464,107 @@ public final class AbyssCrateFabric implements ModInitializer {
             };
             String template = MESSAGES.getProperty("rarity." + rarity.toLowerCase(Locale.ROOT) + "-win", defaultMessage);
             if (!template.isEmpty()) player.sendSystemMessage(colored(rarityMessage(template, player, session.crate, displayName, session.prize.count(), rarity)));
+        }
+    }
+
+    // 3R.5: Holograms are rebuilt at most every 30 seconds, reusing the 3L Text Display approach.
+    private static synchronized void loadTopHolograms() throws IOException {
+        TOP_HOLOGRAMS.clear();
+        if (Files.exists(TOP_HOLOGRAMS_FILE)) try (InputStream in = Files.newInputStream(TOP_HOLOGRAMS_FILE)) {
+            TOP_HOLOGRAMS.load(in);
+        }
+    }
+
+    private static synchronized void saveTopHolograms() throws IOException {
+        Files.createDirectories(TOP_HOLOGRAMS_FILE.getParent());
+        try (OutputStream out = Files.newOutputStream(TOP_HOLOGRAMS_FILE)) {
+            TOP_HOLOGRAMS.store(out, "AbyssCrate 3R.5 live leaderboard hologram positions");
+        }
+    }
+
+    private static int setTopHologram(ServerPlayer player, String kind) {
+        clearTopHologram(player.level().getServer(), kind);
+        BlockPos pos = player.blockPosition();
+        String dimension = player.level().dimension().identifier().toString();
+        synchronized (TOP_HOLOGRAMS) {
+            TOP_HOLOGRAMS.setProperty(kind, dimension + "|" + (pos.getX() + 0.5) + "|" + (pos.getY() + 2.8) + "|" + (pos.getZ() + 0.5));
+            try { saveTopHolograms(); } catch (IOException ex) {
+                player.sendSystemMessage(Component.literal("[AbyssCrate] Nu am putut salva pozitia hologramei: " + ex.getMessage()));
+                return 0;
+            }
+        }
+        refreshTopHolograms(player.level().getServer());
+        player.sendSystemMessage(Component.literal("[AbyssCrate] Holograma " + kind + " a fost setata."));
+        return 1;
+    }
+
+    private static int removeTopHologram(ServerPlayer player, String kind) {
+        clearTopHologram(player.level().getServer(), kind);
+        synchronized (TOP_HOLOGRAMS) {
+            TOP_HOLOGRAMS.remove(kind);
+            try { saveTopHolograms(); } catch (IOException ex) {
+                player.sendSystemMessage(Component.literal("[AbyssCrate] Nu am putut salva stergerea: " + ex.getMessage()));
+                return 0;
+            }
+        }
+        player.sendSystemMessage(Component.literal("[AbyssCrate] Holograma " + kind + " a fost stearsa."));
+        return 1;
+    }
+
+    private static void clearTopHologram(net.minecraft.server.MinecraftServer server, String kind) {
+        String saved;
+        synchronized (TOP_HOLOGRAMS) { saved = TOP_HOLOGRAMS.getProperty(kind); }
+        if (saved == null) return;
+        String[] parts = saved.split("\\|", 4);
+        if (parts.length != 4 || !parts[0].matches("[a-z0-9_:.\\/-]+")) return;
+        try {
+            double x = Double.parseDouble(parts[1]), y = Double.parseDouble(parts[2]), z = Double.parseDouble(parts[3]);
+            if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) return;
+            runHologramCommand(server, "execute in " + parts[0] + " positioned " + x + " " + y + " " + z
+                    + " run kill @e[type=minecraft:text_display,tag=abysscrate_top_" + kind + ",distance=..4]");
+        } catch (NumberFormatException ignored) { }
+    }
+
+    private static void refreshTopHolograms(net.minecraft.server.MinecraftServer server) {
+        for (String kind : new String[] {"top", "wins"}) {
+            String saved;
+            synchronized (TOP_HOLOGRAMS) { saved = TOP_HOLOGRAMS.getProperty(kind); }
+            if (saved == null) continue;
+            String[] parts = saved.split("\\|", 4);
+            if (parts.length != 4 || !parts[0].matches("[a-z0-9_:.\\/-]+")) continue;
+            try {
+                double x = Double.parseDouble(parts[1]), y = Double.parseDouble(parts[2]), z = Double.parseDouble(parts[3]);
+                if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) continue;
+                clearTopHologram(server, kind);
+                boolean wins = kind.equals("wins");
+                String field = wins ? "rarity.LEGENDARY" : "total";
+                List<String> ids = leaderboardIds(field);
+                String title = MESSAGES.getProperty("hologram-" + kind + "-title", wins ? "&6&l✦ TOP LEGENDARY WINS ✦" : "&b&l✦ TOP CRATE OPENS ✦");
+                for (int line = 0; line <= 10; line++) {
+                    String value;
+                    if (line == 0) value = title;
+                    else {
+                        int rank = line - 1;
+                        String name = "Unknown";
+                        long count = 0;
+                        if (rank < ids.size()) {
+                            String id = ids.get(rank);
+                            name = STATS.getProperty("player." + id + ".name", "Unknown");
+                            count = stat("player." + id + "." + field);
+                        }
+                        String format = MESSAGES.getProperty("hologram-" + kind + "-line", "&e#{rank} &f{name} &7- &b{count}");
+                        value = format.replace("{rank}", Integer.toString(line)).replace("{name}", name).replace("{count}", Long.toString(count));
+                    }
+                    double lineY = y - line * 0.28;
+                    String nbt = "{Tags:[\"abysscrate_top_" + kind + "\"],billboard:\"center\",alignment:\"center\",see_through:1b,background:0,shadow:1b,"
+                            + "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],scale:[0.5f,0.5f,0.5f],right_rotation:[0f,0f,0f,1f]},"
+                            + "text:" + hologramComponent(value, line == 0 ? "#FFD700" : "#FFFFFF") + "}";
+                    runHologramCommand(server, "execute in " + parts[0] + " positioned " + x + " " + lineY + " " + z
+                            + " run summon minecraft:text_display ~ ~ ~ " + nbt);
+                }
+            } catch (RuntimeException ex) {
+                System.err.println("[AbyssCrate] Live top hologram refresh failed: " + ex.getMessage());
+            }
         }
     }
 
