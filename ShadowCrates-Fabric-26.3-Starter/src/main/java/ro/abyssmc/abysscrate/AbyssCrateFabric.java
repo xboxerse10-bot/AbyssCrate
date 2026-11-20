@@ -57,7 +57,7 @@ import java.util.regex.Pattern;
  * Nu contine inca interactiuni cu blocuri, chei sau recompense.
  */
 public final class AbyssCrateFabric implements ModInitializer {
-    private static final Path DIR = Path.of("config", "shadowcrates");
+    private static final Path DIR = Path.of("config", "AbyssCrate");
     private static final Path DATA = DIR.resolve("crates.properties");
     private static final Path MESSAGES_FILE = DIR.resolve("messages.properties");
     private static final Properties CRATES = new Properties();
@@ -438,6 +438,12 @@ public final class AbyssCrateFabric implements ModInitializer {
         return stack;
     }
 
+    private static ItemStack previewButton(Item item, Component label) {
+        ItemStack stack = new ItemStack(item);
+        stack.set(DataComponents.CUSTOM_NAME, label);
+        return stack;
+    }
+
     private static void openMainEditor(ServerPlayer admin, String crate) {
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(10, button(Items.EMERALD, "Add Item"));
@@ -624,6 +630,18 @@ public final class AbyssCrateFabric implements ModInitializer {
         openCrateSettings(admin, crate);
     }
 
+    private static String previewRaw(String key) {
+        synchronized (MESSAGES) { return MESSAGES.getProperty(key, key); }
+    }
+
+    private static Component previewText(String key, String... replacements) {
+        String value = previewRaw(key);
+        for (int i = 0; i + 1 < replacements.length; i += 2) {
+            value = value.replace(replacements[i], replacements[i + 1]);
+        }
+        return colored(value);
+    }
+
     private static void openPlayerPreview(ServerPlayer player, String crate) {
         openPlayerPreview(player, crate, 0);
     }
@@ -654,17 +672,17 @@ public final class AbyssCrateFabric implements ModInitializer {
             icon.setCount(amount);
             int weight = parts.length >= 2 ? Math.max(0, parseChance(parts)) : 0;
             double percent = totalWeight > 0 ? 100.0 * weight / totalWeight : 0.0;
-            icon.set(DataComponents.CUSTOM_NAME, Component.literal("Reward #" + rewardId));
+            icon.set(DataComponents.CUSTOM_NAME, previewText("preview.reward-name", "{id}", Integer.toString(rewardId)));
             icon.set(DataComponents.LORE, new ItemLore(List.of(
-                Component.literal("Sansa: " + String.format(Locale.ROOT, "%.2f", percent) + "%"),
-                Component.literal("Cantitate: " + amount),
-                Component.literal("Doar vizualizare")
+                previewText("preview.chance", "{chance}", String.format(Locale.ROOT, "%.2f", percent)),
+                previewText("preview.amount", "{amount}", Integer.toString(amount)),
+                previewText("preview.readonly")
             )));
             view.setItem(i, icon);
         }
-        if (current > 0) view.setItem(45, button(Items.ARROW, "Pagina anterioara"));
-        view.setItem(49, button(Items.BOOK, "Pagina " + (current + 1) + "/" + (maxPage + 1) + " | " + ids.size() + " recompense"));
-        if (current < maxPage) view.setItem(53, button(Items.ARROW, "Pagina urmatoare"));
+        if (current > 0) view.setItem(45, previewButton(Items.ARROW, previewText("preview.previous")));
+        view.setItem(49, previewButton(Items.BOOK, previewText("preview.page", "{page}", Integer.toString(current + 1), "{total}", Integer.toString(maxPage + 1), "{rewards}", Integer.toString(ids.size()))));
+        if (current < maxPage) view.setItem(53, previewButton(Items.ARROW, previewText("preview.next")));
         player.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x6, id, inv, view, 6) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
                 if (slot == 45 && current > 0) {
@@ -682,7 +700,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             @Override public ItemStack quickMoveStack(Player clicker, int slot) {
                 return ItemStack.EMPTY;
             }
-        }, Component.literal("Preview | " + displayName(crate) + " | " + (current + 1) + "/" + (maxPage + 1))));
+        }, previewText("preview.title", "{crate}", displayName(crate), "{page}", Integer.toString(current + 1), "{total}", Integer.toString(maxPage + 1))));
     }
 
     private static void openCrateSettings(ServerPlayer admin, String crate) {
@@ -1307,6 +1325,14 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static synchronized void loadMessages() throws IOException {
         Properties defaults = new Properties();
         defaults.setProperty("prefix", DEFAULT_GRADIENT_PREFIX);
+        defaults.setProperty("preview.title", "&#004FFF✦ &#00B7FF{crate} &#004FFF✦ &#AAAAAA{page}/{total}");
+        defaults.setProperty("preview.reward-name", "&#FFD700Recompensa #{id}");
+        defaults.setProperty("preview.chance", "&#FFD700Șansă: &#FFFFFF{chance}%");
+        defaults.setProperty("preview.amount", "&#55FF55Cantitate: &#FFFFFF{amount}");
+        defaults.setProperty("preview.readonly", "&#FF5555Doar vizualizare");
+        defaults.setProperty("preview.previous", "&#00B7FFPagina anterioară");
+        defaults.setProperty("preview.next", "&#00B7FFPagina următoare");
+        defaults.setProperty("preview.page", "&#FFD700Pagina {page}/{total} &#AAAAAA| {rewards} recompense");
         defaults.setProperty("broadcast-win", "{prefix}Jucatorul {player} a castigat {amount} x {item} din crate-ul {crate}!");
         defaults.setProperty("block-set", "Bloc asociat crate-ului {crate}.");
         defaults.setProperty("block-unset", "Blocul nu mai este un crate ({crate}).");
@@ -1339,6 +1365,21 @@ public final class AbyssCrateFabric implements ModInitializer {
         Properties next = new Properties(defaults);
         try (InputStream in = Files.newInputStream(MESSAGES_FILE)) {
             next.load(in);
+        }
+        // Add new preview message keys to existing configurations without overwriting custom messages.
+        Properties additions = new Properties();
+        for (String key : defaults.stringPropertyNames()) {
+            if (key.startsWith("preview.") && !next.containsKey(key)) {
+                additions.setProperty(key, defaults.getProperty(key));
+            }
+        }
+        if (!additions.isEmpty()) {
+            Properties stored = new Properties();
+            try (InputStream in = Files.newInputStream(MESSAGES_FILE)) { stored.load(in); }
+            for (String key : additions.stringPropertyNames()) stored.setProperty(key, additions.getProperty(key));
+            try (OutputStream out = Files.newOutputStream(MESSAGES_FILE)) {
+                stored.store(out, "AbyssCrate messages - edit and use /crate reload");
+            }
         }
         // Upgrade only the original unformatted prefix; preserve all custom HEX/gradient prefixes.
         String loadedPrefix = next.getProperty("prefix", DEFAULT_GRADIENT_PREFIX);
