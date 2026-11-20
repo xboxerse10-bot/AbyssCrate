@@ -1723,9 +1723,14 @@ public final class AbyssCrateFabric implements ModInitializer {
         if (!Files.exists(MILESTONES_FILE)) {
             MILESTONES.clear();
             MILESTONES.setProperty("enabled", "true");
-            MILESTONES.setProperty("reward.10", "give {player} minecraft:emerald 3");
+            MILESTONES.setProperty("max-level", "200");
+            MILESTONES.setProperty("reward.30", "give {player} minecraft:emerald 3");
             MILESTONES.setProperty("reward.50", "give {player} minecraft:diamond 3");
+            MILESTONES.setProperty("reward.70", "give {player} minecraft:gold_ingot 16");
             MILESTONES.setProperty("reward.100", "give {player} minecraft:nether_star 1");
+            MILESTONES.setProperty("reward.130", "give {player} minecraft:diamond 8");
+            MILESTONES.setProperty("reward.150", "give {player} minecraft:emerald 32");
+            MILESTONES.setProperty("reward.200", "give {player} minecraft:netherite_ingot 1");
             saveMilestones();
         }
         MILESTONES.clear();
@@ -1785,21 +1790,58 @@ public final class AbyssCrateFabric implements ModInitializer {
         }
     }
 
+    // 3S.2: 28 consecutive levels per page, a serpentine route through four rows.
+    // Levels 1..200 are always shown; reward thresholds can be added at any level.
+    private static final int[] MILESTONE_PATH = {
+        10,11,12,13,14,15,16,
+        25,24,23,22,21,20,19,
+        28,29,30,31,32,33,34,
+        43,42,41,40,39,38,37
+    };
+
+    private static int milestoneMaxLevel() {
+        int configured = 200;
+        try { configured = Math.max(200, Integer.parseInt(MILESTONES.getProperty("max-level", "200"))); }
+        catch (NumberFormatException ignored) {}
+        for (int threshold : milestoneThresholds()) configured = Math.max(configured, threshold);
+        return configured;
+    }
+
     private static void openMilestones(ServerPlayer player) {
+        openMilestones(player, 0);
+    }
+
+    private static void openMilestones(ServerPlayer player, int requestedPage) {
         String id = player.getUUID().toString();
         long points = stat("player." + id + ".total");
+        int maxLevel = milestoneMaxLevel();
+        int pageCount = (maxLevel + MILESTONE_PATH.length - 1) / MILESTONE_PATH.length;
+        int page = Math.max(0, Math.min(requestedPage, pageCount - 1));
         SimpleContainer view = new SimpleContainer(54);
-        view.setItem(4, button(Items.NETHER_STAR, "Milestone Points: " + points));
-        List<Integer> thresholds = milestoneThresholds();
-        for (int i = 0; i < Math.min(45, thresholds.size()); i++) {
-            int n = thresholds.get(i);
-            boolean claimed = "true".equals(STATS.getProperty("player." + id + ".milestone." + n));
-            view.setItem(i + 9, button(claimed ? Items.EMERALD : points >= n ? Items.GOLD_INGOT : Items.PAPER,
-                n + " points | " + (claimed ? "Claimed" : points >= n ? "Awaiting next opening" : points + "/" + n)));
+        view.setItem(4, button(Items.NETHER_STAR, "Milestone Level: " + points + " | " + maxLevel));
+        for (int i = 0; i < MILESTONE_PATH.length; i++) {
+            int level = page * MILESTONE_PATH.length + i + 1;
+            if (level > maxLevel) break;
+            String command = MILESTONES.getProperty("reward." + level, "").trim();
+            boolean reward = !command.isEmpty();
+            boolean reached = points >= level;
+            boolean claimed = "true".equals(STATS.getProperty("player." + id + ".milestone." + level));
+            ItemStack icon = button(reward ? Items.GOLD_BLOCK : Items.QUARTZ_BLOCK,
+                "Level " + level + (reward ? " | REWARD" : "") + (reached ? " | Completed" : " | Locked"));
+            if (reached) icon.set(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, true);
+            icon.set(DataComponents.LORE, new ItemLore(List.of(
+                colored(reached ? "&aLevel reached" : "&7Progress: &f" + points + "&7/&f" + level),
+                colored(reward ? (claimed ? "&aReward claimed" : "&eReward at this level") : "&7Regular milestone"),
+                colored(reward ? "&7Reward: &f" + command : "&7Open crates to advance")
+            )));
+            view.setItem(MILESTONE_PATH[i], icon);
         }
-        view.setItem(49, button(Items.BARRIER, "Close"));
-        showStatsMenu(player, "AbyssCrate | Milestones", view, slot -> {
-            if (slot == 49) player.closeContainer();
+        if (page > 0) view.setItem(45, button(Items.ARROW, "Previous Page"));
+        view.setItem(49, button(Items.BOOK, "Page " + (page + 1) + "/" + pageCount + " | Level " + points));
+        if (page + 1 < pageCount) view.setItem(53, button(Items.ARROW, "Next Page"));
+        showStatsMenu(player, "AbyssCrate | Milestones | " + (page + 1) + "/" + pageCount, view, slot -> {
+            if (slot == 45 && page > 0) openMilestones(player, page - 1);
+            else if (slot == 53 && page + 1 < pageCount) openMilestones(player, page + 1);
         });
     }
 
