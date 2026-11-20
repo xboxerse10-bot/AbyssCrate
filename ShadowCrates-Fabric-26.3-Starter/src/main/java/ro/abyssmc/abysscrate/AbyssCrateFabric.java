@@ -680,7 +680,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             .replace("{item}", displayName)
             .replace("{amount}", Integer.toString(session.prize.count()));
         if (settingBool(session.crate, "broadcast", false)) {
-            player.getServer().getPlayerList().broadcastSystemMessage(Component.literal(player.getName().getString() + " » " + winText), false);
+            ServerLifecycleHooks.getCurrentServer().getPlayerList().broadcastSystemMessage(Component.literal(player.getName().getString() + " » " + winText), false);
         } else player.sendSystemMessage(Component.literal(winText));
     }
 
