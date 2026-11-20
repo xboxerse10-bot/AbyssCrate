@@ -2102,8 +2102,16 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void showStatsMenu(ServerPlayer viewer, String title, SimpleContainer view, java.util.function.IntConsumer handler) {
+        // 5M.5: Consistent return navigation for every 6-row submenu.
+        // Slot 46 is outside the content and pagination areas of these screens.
+        boolean isMainHub = title.equals(hubValue("menu.title", "AbyssMC | Crate Menu"));
+        if (!isMainHub) {
+            view.setItem(46, configuredHubButton("navigation.46", Items.ARROW,
+                "&eReturn to Menu", "&7Click pentru meniul principal"));
+        }
         viewer.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x6, sync, inv, view, 6) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (!isMainHub && slot == 46) { openCrateHub(viewer); return; }
                 if (slot >= 0 && slot < 54) { handler.accept(slot); return; }
                 super.clicked(slot, button, input, clicker);
             }
