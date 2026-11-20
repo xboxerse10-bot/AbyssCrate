@@ -301,29 +301,29 @@ public final class AbyssCrateFabric implements ModInitializer {
                 .then(Commands.literal("stats")
                     .executes(ctx -> { openStatistics(ctx.getSource().getPlayerOrException(), ctx.getSource().getPlayerOrException().getUUID(), ctx.getSource().getPlayerOrException().getName().getString()); return 1; })
                     .then(Commands.argument("player", EntityArgument.player())
-                        .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                        .requires(src -> hasPermission(src, "abysscrate.admin.stats"))
                         .executes(ctx -> { ServerPlayer target = EntityArgument.getPlayer(ctx, "player"); openStatistics(ctx.getSource().getPlayerOrException(), target.getUUID(), target.getName().getString()); return 1; })))
                 .then(Commands.literal("history")
                     .executes(ctx -> { ServerPlayer player = ctx.getSource().getPlayerOrException(); openHistory(player, player.getUUID(), player.getName().getString(), 0); return 1; })
                     .then(Commands.argument("player", EntityArgument.player())
-                        .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                        .requires(src -> hasPermission(src, "abysscrate.admin.stats"))
                         .executes(ctx -> { ServerPlayer target = EntityArgument.getPlayer(ctx, "player"); openHistory(ctx.getSource().getPlayerOrException(), target.getUUID(), target.getName().getString(), 0); return 1; })))
                 .then(Commands.literal("top")
                     .executes(ctx -> { openLeaderboard(ctx.getSource().getPlayerOrException(), false); return 1; }))
                 .then(Commands.literal("hologramtop")
-                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(src -> hasPermission(src, "abysscrate.admin.holograms"))
                     .then(Commands.literal("set").executes(ctx -> setTopHologram(ctx.getSource().getPlayerOrException(), "top")))
                     .then(Commands.literal("remove").executes(ctx -> removeTopHologram(ctx.getSource().getPlayerOrException(), "top")))
                     .then(Commands.literal("refresh").executes(ctx -> { refreshTopHolograms(ctx.getSource().getServer()); return 1; })))
                 .then(Commands.literal("hologramwins")
-                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(src -> hasPermission(src, "abysscrate.admin.holograms"))
                     .then(Commands.literal("set").executes(ctx -> setTopHologram(ctx.getSource().getPlayerOrException(), "wins")))
                     .then(Commands.literal("remove").executes(ctx -> removeTopHologram(ctx.getSource().getPlayerOrException(), "wins")))
                     .then(Commands.literal("refresh").executes(ctx -> { refreshTopHolograms(ctx.getSource().getServer()); return 1; })))
                 .then(Commands.literal("milestones")
                     .executes(ctx -> { openMilestones(ctx.getSource().getPlayerOrException()); return 1; }))
                 .then(Commands.literal("milestoneadmin")
-                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(src -> hasPermission(src, "abysscrate.admin.milestones"))
                     .executes(ctx -> { openMilestoneAdmin(ctx.getSource().getPlayerOrException()); return 1; })
                     .then(Commands.literal("set")
                         .then(Commands.argument("points", IntegerArgumentType.integer(1))
@@ -350,7 +350,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         catch (IOException ex) { ctx.getSource().sendFailure(Component.literal(ex.getMessage())); return 0; }
                     })))
                 .then(Commands.literal("adminstats")
-                    .requires(src -> src.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(src -> hasPermission(src, "abysscrate.admin.stats"))
                     .executes(ctx -> { openAdminStatistics(ctx.getSource().getPlayerOrException()); return 1; })));
         });
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
@@ -371,7 +371,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         }))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("hologram")
-                    .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(source -> hasPermission(source, "abysscrate.admin.holograms"))
                     .then(Commands.argument("name", StringArgumentType.word())
                         .then(Commands.literal("add")
                             .then(Commands.argument("line", IntegerArgumentType.integer(1, 10))
@@ -400,7 +400,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             // 3P.1: Custom key design commands; only admins can change key appearance.
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("key")
-                    .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(source -> hasPermission(source, "abysscrate.admin.keys"))
                     .then(Commands.argument("name", StringArgumentType.word())
                         .then(Commands.literal("name")
                             .then(Commands.argument("text", StringArgumentType.greedyString())
@@ -421,7 +421,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                                     .executes(ctx -> updateKeyCommand(ctx.getSource(), StringArgumentType.getString(ctx, "name"), "lore." + IntegerArgumentType.getInteger(ctx, "line"), ""))))))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("editor")
-                    .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
+                    .requires(source -> hasPermission(source, "abysscrate.admin.crates"))
                     .then(Commands.argument("name", StringArgumentType.word())
                         .executes(ctx -> {
                             String name = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
@@ -438,6 +438,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             );
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("givekey")
+                    .requires(src -> hasPermission(src, "abysscrate.admin.keys"))
                     .then(Commands.argument("player", EntityArgument.player())
                         .then(Commands.argument("name", StringArgumentType.word())
                             .then(Commands.argument("amount", IntegerArgumentType.integer(1, 64))
@@ -461,6 +462,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                                     return 1;
                                 })))))
                 .then(Commands.literal("set")
+                    .requires(src -> hasPermission(src, "abysscrate.admin.crates"))
                     .then(Commands.argument("name", StringArgumentType.word())
                         .executes(ctx -> {
                             String name = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
@@ -490,7 +492,8 @@ public final class AbyssCrateFabric implements ModInitializer {
                             reply(ctx.getSource(), "block-set", name);
                             return 1;
                         })))
-                .then(Commands.literal("unset").executes(ctx -> {
+                .then(Commands.literal("unset")
+                    .requires(src -> hasPermission(src, "abysscrate.admin.crates")).executes(ctx -> {
                     var player = ctx.getSource().getPlayerOrException();
                     HitResult target = player.pick(5.0, 0.0f, false);
                     if (!(target instanceof BlockHitResult hit) || target.getType() != HitResult.Type.BLOCK) {
@@ -515,6 +518,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     return 1;
                 }))
                 .then(Commands.literal("create")
+                    .requires(src -> hasPermission(src, "abysscrate.admin.crates"))
                     .then(Commands.argument("name", StringArgumentType.word())
                         .executes(ctx -> {
                             String name = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
@@ -540,6 +544,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                             return 1;
                         })))
                 .then(Commands.literal("remove")
+                    .requires(src -> hasPermission(src, "abysscrate.admin.crates"))
                     .then(Commands.argument("name", StringArgumentType.word())
                         .executes(ctx -> {
                             String name = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
@@ -560,7 +565,8 @@ public final class AbyssCrateFabric implements ModInitializer {
                             reply(ctx.getSource(), "removed", name);
                             return 1;
                         })))
-                .then(Commands.literal("reload").executes(ctx -> {
+                .then(Commands.literal("reload")
+                    .requires(src -> hasPermission(src, "abysscrate.admin.reload")).executes(ctx -> {
                     try {
                         loadMessages();
                         loadCrates();
@@ -671,8 +677,47 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     // 5M: One central menu; all privileged actions are rechecked on click.
+    // 6P: LuckPerms API accessed reflectively so the mod can compile and start
+    // without adding a mandatory LuckPerms dependency. Staff nodes fail closed.
+    private static boolean hasPermission(ServerPlayer player, String node) {
+        try {
+            Class<?> provider = Class.forName("net.luckperms.api.LuckPermsProvider");
+            Object api = provider.getMethod("get").invoke(null);
+            Object manager = api.getClass().getMethod("getUserManager").invoke(api);
+            Object user = manager.getClass().getMethod("getUser", UUID.class).invoke(manager, player.getUUID());
+            if (user == null) return false;
+            Object cached = user.getClass().getMethod("getCachedData").invoke(user);
+            Object data = cached.getClass().getMethod("getPermissionData").invoke(cached);
+            Object result = data.getClass().getMethod("checkPermission", String.class).invoke(data, node);
+            boolean allowed = (boolean) result.getClass().getMethod("asBoolean").invoke(result);
+            if (allowed) return true;
+            if ("FALSE".equals(result.toString())) return false;
+            Object wildcard = data.getClass().getMethod("checkPermission", String.class).invoke(data, "abysscrate.admin.*");
+            return (boolean) wildcard.getClass().getMethod("asBoolean").invoke(wildcard);
+        } catch (ReflectiveOperationException | LinkageError ex) {
+            // Never grant administrative access if LuckPerms is unavailable.
+            return false;
+        }
+    }
+
+    private static boolean hasPermission(net.minecraft.commands.CommandSourceStack source, String node) {
+        try { return hasPermission(source.getPlayerOrException(), node); }
+        catch (com.mojang.brigadier.exceptions.CommandSyntaxException ex) { return true; } // console
+    }
+
     private static boolean canManageCrates(ServerPlayer player) {
-        return player.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN);
+        return hasPermission(player, "abysscrate.admin.crates")
+            || hasPermission(player, "abysscrate.admin.keys")
+            || hasPermission(player, "abysscrate.admin.milestones")
+            || hasPermission(player, "abysscrate.admin.stats")
+            || hasPermission(player, "abysscrate.admin.holograms")
+            || hasPermission(player, "abysscrate.admin.rewards");
+    }
+
+    private static boolean requireAdmin(ServerPlayer player, String node) {
+        if (hasPermission(player, node)) return true;
+        player.sendSystemMessage(Component.literal("[AbyssCrate] Nu ai permisiunea " + node));
+        return false;
     }
 
     private static ItemStack hubButton(Item item, String name, String... description) {
@@ -733,7 +778,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openHubCrateList(ServerPlayer player, boolean admin, int page) {
-        if (admin && !canManageCrates(player)) { openCrateHub(player); return; }
+        if (admin && !hasPermission(player, "abysscrate.admin.crates") && !hasPermission(player, "abysscrate.admin.holograms")) { openCrateHub(player); return; }
         List<String> crates = battleCrates();
         int maxPage = Math.max(0, (crates.size() - 1) / 28);
         int current = Math.max(0, Math.min(page, maxPage));
@@ -758,7 +803,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                 int index = current * 28 + ((slot / 9) - 1) * 7 + (slot % 9) - 1;
                 if (index >= 0 && index < crates.size()) {
                     String crate = crates.get(index);
-                    if (admin) { if (canManageCrates(player)) openMainEditor(player, crate); }
+                    if (admin) { if (hasPermission(player, "abysscrate.admin.crates")) openMainEditor(player, crate); }
                     else openPlayerPreview(player, crate);
                 }
             } else if (slot == 45) openHubCrateList(player, admin, current - 1);
@@ -773,18 +818,19 @@ public final class AbyssCrateFabric implements ModInitializer {
         SimpleContainer view = new SimpleContainer(54);
         hubFrame(view);
         view.setItem(4, configuredHubButton("admin.4", Items.COMMAND_BLOCK, "&cAbyssMC | Admin Panel", "&7Acces restrictionat la administratori"));
-        view.setItem(11, configuredHubButton("admin.11", Items.CHEST, "&6Crate Editors", "&7Recompense, chei, raritati si animatii"));
-        view.setItem(13, configuredHubButton("admin.13", Items.NETHER_STAR, "&eMilestone Admin", "&7Vizualizeaza recompensele configurate"));
-        view.setItem(15, configuredHubButton("admin.15", Items.BOOK, "&bGlobal Statistics", "&7Total deschideri si statistici globale"));
-        view.setItem(31, configuredHubButton("admin.31", Items.OAK_SIGN, "&dHolograms & Settings", "&7Alege un crate din editor", "&7si deschide setarile / hologramele"));
+        if (hasPermission(player, "abysscrate.admin.crates")) view.setItem(11, configuredHubButton("admin.11", Items.CHEST, "&6Crate Editors", "&7Recompense, chei, raritati si animatii"));
+        if (hasPermission(player, "abysscrate.admin.milestones")) view.setItem(13, configuredHubButton("admin.13", Items.NETHER_STAR, "&eMilestone Admin", "&7Vizualizeaza recompensele configurate"));
+        if (hasPermission(player, "abysscrate.admin.stats")) view.setItem(15, configuredHubButton("admin.15", Items.BOOK, "&bGlobal Statistics", "&7Total deschideri si statistici globale"));
+        if (hasPermission(player, "abysscrate.admin.holograms")) view.setItem(31, configuredHubButton("admin.31", Items.OAK_SIGN, "&dHolograms & Settings", "&7Alege un crate din editor", "&7si deschide setarile / hologramele"));
         view.setItem(48, configuredHubButton("admin.48", Items.ARROW, "&7Back to Main Menu"));
         view.setItem(49, configuredHubButton("admin.49", Items.BARRIER, "&cClose"));
         showStatsMenu(player, hubValue("admin.title", "AbyssMC | Admin Panel"), view, slot -> {
             if (!canManageCrates(player)) { player.closeContainer(); return; }
             switch (slot) {
-                case 11, 31 -> openHubCrateList(player, true, 0);
-                case 13 -> openMilestoneAdmin(player);
-                case 15 -> openAdminStatistics(player);
+                case 11 -> { if (hasPermission(player, "abysscrate.admin.crates")) openHubCrateList(player, true, 0); }
+                case 31 -> { if (hasPermission(player, "abysscrate.admin.holograms")) openHubCrateList(player, true, 0); }
+                case 13 -> { if (hasPermission(player, "abysscrate.admin.milestones")) openMilestoneAdmin(player); }
+                case 15 -> { if (hasPermission(player, "abysscrate.admin.stats")) openAdminStatistics(player); }
                 case 48 -> openCrateHub(player);
                 case 49 -> player.closeContainer();
                 default -> { }
@@ -806,6 +852,9 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openMainEditor(ServerPlayer admin, String crate) {
+        if (!hasPermission(admin, "abysscrate.admin.crates") && !hasPermission(admin, "abysscrate.admin.rewards") && !hasPermission(admin, "abysscrate.admin.keys")) {
+            requireAdmin(admin, "abysscrate.admin.crates"); return;
+        }
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(10, button(Items.EMERALD, "Add Item"));
         view.setItem(12, button(Items.CHEST, "View Rewards"));
@@ -884,6 +933,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openHologramEditor(ServerPlayer admin, String crate) {
+        if (!requireAdmin(admin, "abysscrate.admin.holograms")) return;
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(10, button(Items.NAME_TAG, "Line 1: /crate hologram " + crate + " add 1 <text>"));
         view.setItem(11, button(Items.PAPER, "Line 2: /crate hologram " + crate + " add 2 <text>"));
@@ -1125,6 +1175,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openCrateSettings(ServerPlayer admin, String crate) {
+        if (!requireAdmin(admin, "abysscrate.admin.crates")) return;
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(10, button(Items.NAME_TAG, "Display Name: " + displayName(crate) + " (click: cycle)"));
         view.setItem(11, button(Items.NETHER_STAR, "Animation: " + (settingBool(crate, "animation", true) ? "ON" : "OFF")));
@@ -1462,6 +1513,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     // 3I: Add up to 18 different reward stacks in one operation.
     // The top two rows are editable; the last row is reserved for controls.
     private static void openAddEditor(ServerPlayer admin, String crate) {
+        if (!requireAdmin(admin, "abysscrate.admin.rewards")) return;
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(22, button(Items.EMERALD, "Save All - close this menu"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
@@ -1597,6 +1649,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openRewardsEditor(ServerPlayer admin, String crate, int page) {
+        if (!requireAdmin(admin, "abysscrate.admin.rewards")) return;
         List<Integer> ids = rewardIds(crate);
         int maxPage = Math.max(0, (ids.size() - 1) / 18);
         int current = Math.max(0, Math.min(page, maxPage));
@@ -2088,6 +2141,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openMilestoneAdmin(ServerPlayer admin) {
+        if (!requireAdmin(admin, "abysscrate.admin.milestones")) return;
         SimpleContainer view = new SimpleContainer(54);
         view.setItem(4, button(Items.COMMAND_BLOCK, "Configure: /crate milestoneadmin set <points> <command>"));
         List<Integer> thresholds = milestoneThresholds();
@@ -2190,6 +2244,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openAdminStatistics(ServerPlayer viewer) {
+        if (!requireAdmin(viewer, "abysscrate.admin.stats")) return;
         SimpleContainer view = new SimpleContainer(54);
         view.setItem(4, button(Items.NETHER_STAR, "Global openings: " + stat("global.total")));
         view.setItem(13, button(Items.GOLD_INGOT, "Global LEGENDARY: " + stat("global.rarity.LEGENDARY")));
@@ -2674,6 +2729,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static void openKeyEditor(ServerPlayer admin, String crate) {
+        if (!requireAdmin(admin, "abysscrate.admin.keys")) return;
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(10, button(Items.NAME_TAG, "Name: " + keySetting(crate, "name", "Cheie " + crate) + " | click: copy held item name"));
         view.setItem(11, button(Items.BOOK, "Lore | click: copy held item lore (max 10 lines)"));
