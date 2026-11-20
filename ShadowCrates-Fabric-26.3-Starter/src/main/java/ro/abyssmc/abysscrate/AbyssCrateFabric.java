@@ -1596,10 +1596,25 @@ public final class AbyssCrateFabric implements ModInitializer {
                 String field = wins ? "rarity.LEGENDARY" : "total";
                 List<String> ids = leaderboardIds(field);
                 String title = MESSAGES.getProperty("hologram-" + kind + "-title", wins ? "&6&l✦ TOP LEGENDARY WINS ✦" : "&b&l✦ TOP CRATE OPENS ✦");
-                for (int line = 0; line <= 10; line++) {
+                // 3R.6: 10 optional lines below each live leaderboard.
+                // Defaults are only shown for the first three footer lines.
+                List<String> footerLines = new ArrayList<>();
+                for (int footer = 1; footer <= 10; footer++) {
+                    String defaultFooter = switch (footer) {
+                        case 1 -> wins ? "&6✦ Vrei sa castigi LEGENDARY? ✦" : "&a✦ Vrei sa ajungi in TOP 10? ✦";
+                        case 2 -> "&fVoteaza pe serverul AbyssMC:";
+                        case 3 -> "&#55FFFFabyss-mc.ro/vote";
+                        default -> "";
+                    };
+                    String footerText = MESSAGES.getProperty("hologram-" + kind + "-footer-" + footer, defaultFooter);
+                    if (footerText != null && !footerText.isBlank()) footerLines.add(footerText);
+                }
+                for (int line = 0; line <= 10 + footerLines.size(); line++) {
                     String value;
                     if (line == 0) value = title;
-                    else {
+                    else if (line > 10) {
+                        value = footerLines.get(line - 11);
+                    } else {
                         int rank = line - 1;
                         String name = "Unknown";
                         long count = 0;
