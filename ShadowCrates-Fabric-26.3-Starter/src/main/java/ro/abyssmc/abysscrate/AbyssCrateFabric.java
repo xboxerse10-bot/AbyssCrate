@@ -362,36 +362,67 @@ public final class AbyssCrateFabric implements ModInitializer {
         }, Component.literal("AbyssCrate | " + crate)));
     }
 
+    // 3I: Add up to 18 different reward stacks in one operation.
+    // The top two rows are editable; the last row is reserved for controls.
     private static void openAddEditor(ServerPlayer admin, String crate) {
         SimpleContainer view = new SimpleContainer(27);
-        view.setItem(4, button(Items.PAPER, "Pune recompensa in slotul 13, apoi inchide"));
-        view.setItem(22, button(Items.BARRIER, "Inchide pentru a salva"));
+        view.setItem(22, button(Items.EMERALD, "Save All - close this menu"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
-            @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
-                if (slot >= 0 && slot < 27 && slot != 13) return;
-                super.clicked(slot, button, ContainerInput, player);
+            private boolean saved = false;
+
+            @Override public void clicked(int slot, int button, ContainerInput clickType, Player player) {
+                if (slot >= 18 && slot < 27) {
+                    if (slot == 22) admin.closeContainer();
+                    return;
+                }
+                super.clicked(slot, button, clickType, player);
             }
+
             @Override public void removed(Player player) {
-                ItemStack reward = view.removeItemNoUpdate(13);
-                if (!reward.isEmpty()) {
-                    String itemId = BuiltInRegistries.ITEM.getKey(reward.getItem()).toString();
-                    try {
-                        synchronized (REWARDS) {
-                            int next = 1;
-                            while (REWARDS.containsKey(crate + "." + next)) next++;
-                            REWARDS.setProperty(crate + "." + next, itemId + "|" + reward.getCount() + "|10");
-                            saveRewards();
-                        }
-                        player.sendSystemMessage(Component.literal("[AbyssCrate] Reward saved: " + itemId));
-                    } catch (IOException ex) {
-                        player.sendSystemMessage(Component.literal("[AbyssCrate] Could not save reward."));
+                if (!saved) {
+                    saved = true;
+                    List<ItemStack> pending = new ArrayList<>();
+                    for (int slot = 0; slot < 18; slot++) {
+                        ItemStack stack = view.getItem(slot);
+                        if (!stack.isEmpty()) pending.add(stack.copy());
                     }
-                    // Try to return the real item; do not duplicate it on a failed insert.
-                    player.getInventory().add(reward);
+                    if (!pending.isEmpty()) {
+                        int savedCount = 0;
+                        try {
+                            synchronized (REWARDS) {
+                                // Build all entries first; persist only once.
+                                Properties backup = new Properties();
+                                backup.putAll(REWARDS);
+                                int next = 1;
+                                for (ItemStack reward : pending) {
+                                    while (REWARDS.containsKey(crate + "." + next)) next++;
+                                    String itemId = BuiltInRegistries.ITEM.getKey(reward.getItem()).toString();
+                                    REWARDS.setProperty(crate + "." + next, itemId + "|" + reward.getCount() + "|10");
+                                    next++;
+                                }
+                                try {
+                                    saveRewards();
+                                    savedCount = pending.size();
+                                } catch (IOException ex) {
+                                    REWARDS.clear();
+                                    REWARDS.putAll(backup);
+                                    throw ex;
+                                }
+                            }
+                            player.sendSystemMessage(Component.literal("[AbyssCrate] " + savedCount + " rewards saved for " + crate + "."));
+                        } catch (IOException ex) {
+                            player.sendSystemMessage(Component.literal("[AbyssCrate] Could not save rewards; no changes applied."));
+                        }
+                    }
+                    // Return the original stacks; the editor must never consume admin items.
+                    for (int slot = 0; slot < 18; slot++) {
+                        ItemStack original = view.removeItemNoUpdate(slot);
+                        if (!original.isEmpty()) player.getInventory().add(original);
+                    }
                 }
                 super.removed(player);
             }
-        }, Component.literal("Add Reward | " + crate)));
+        }, Component.literal("Add Multiple Rewards | " + crate)));
     }
 
     private static List<Integer> rewardIds(String crate) {
