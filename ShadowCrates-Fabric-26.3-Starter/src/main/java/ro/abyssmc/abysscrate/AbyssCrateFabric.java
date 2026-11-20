@@ -511,8 +511,12 @@ public final class AbyssCrateFabric implements ModInitializer {
                 runHologramCommand(server, prefix + "kill @e[type=minecraft:text_display,tag=" + tag + ",distance=..0.2]");
                 if (!settingBool(entry.getValue(), "hologram", true)) continue;
                 String name = displayName(entry.getValue()).replaceAll("[^a-zA-Z0-9 _-]", "");
-                String label = "{\"text\":\"✦ " + name + " ✦\",\"color\":\"aqua\",\"bold\":true,\"extra\":[{\"text\":\"\\nRight Click to Open\\nLeft Click to Preview\",\"color\":\"white\",\"bold\":false}]}";
-                String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],billboard:\"center\",alignment:\"center\",see_through:1b,background:0,text:'" + label + "'}";
+                // Minecraft 26.3 expects an SNBT text component, not a JSON string.
+                // Keep the label compact and place each line within one display entity.
+                String textComponent = "{text:\"✦ " + name + " ✦\",color:\"aqua\",bold:true,extra:["
+                        + "{text:\"\\nRight Click to Open\",color:\"white\",bold:false},"
+                        + "{text:\"\\nLeft Click to Preview\",color:\"gray\",bold:false}]}";
+                String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],billboard:\"center\",alignment:\"center\",see_through:1b,background:0,transformation:{scale:[0.5f,0.5f,0.5f]},text:" + textComponent + "}";
                 runHologramCommand(server, prefix + "summon minecraft:text_display ~ ~ ~ " + nbt);
             } catch (RuntimeException ignored) { }
         }
@@ -520,7 +524,7 @@ public final class AbyssCrateFabric implements ModInitializer {
 
     private static void runHologramCommand(net.minecraft.server.MinecraftServer server, String command) {
         try {
-            server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), command);
+            server.getCommands().performPrefixedCommand(server.createCommandSourceStack().withSuppressedOutput(), command);
         } catch (RuntimeException ex) {
             System.err.println("[AbyssCrate] Hologram command failed: " + ex.getMessage());
         }
