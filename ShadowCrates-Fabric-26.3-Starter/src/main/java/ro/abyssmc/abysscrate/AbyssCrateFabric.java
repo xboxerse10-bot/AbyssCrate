@@ -62,6 +62,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Path PLACEMENTS_FILE = DIR.resolve("placements.properties");
     private static final Path REWARDS_FILE = DIR.resolve("rewards.properties");
     private static final Properties REWARDS = new Properties();
+    private static final Path SETTINGS_FILE = DIR.resolve("crate-settings.properties");
+    private static final Properties SETTINGS = new Properties();
     private static final String KEY_TAG = "shadowcrates_key_type";
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
     private static final int ANIMATION_TICKS = 100;
@@ -70,9 +72,11 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final class MysterySession {
         final String crate;
         final RewardChoice prize;
+        final int duration;
         final SimpleContainer display = new SimpleContainer(27);
         int ticks;
         MysterySession(String crate, RewardChoice prize) {
+            this.duration = settingInt(crate, "duration", 100);
             this.crate = crate;
             this.prize = prize;
         }
@@ -85,6 +89,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadMessages();
             loadPlacements();
             loadRewards();
+            loadSettings();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
@@ -99,6 +104,10 @@ public final class AbyssCrateFabric implements ModInitializer {
             if (!(player instanceof ServerPlayer serverPlayer)) return InteractionResult.SUCCESS;
             ItemStack held = player.getItemInHand(hand);
             if (!isKeyFor(held, name)) {
+                if (held.isEmpty() && settingBool(name, "preview", true)) {
+                    openPlayerPreview(serverPlayer, name);
+                    return InteractionResult.SUCCESS;
+                }
                 player.sendSystemMessage(Component.literal(message("needs-key", name)));
                 return InteractionResult.SUCCESS;
             }
@@ -117,6 +126,10 @@ public final class AbyssCrateFabric implements ModInitializer {
                 player.sendSystemMessage(Component.literal("[AbyssCrate] Ai deja un crate in curs de deschidere."));
                 return InteractionResult.SUCCESS;
             }
+            if (!settingBool(name, "animation", true)) {
+                finishMystery(serverPlayer, new MysterySession(name, selected));
+                return InteractionResult.SUCCESS;
+            }
             MysterySession session = new MysterySession(name, selected);
             ACTIVE_OPENINGS.put(serverPlayer.getUUID(), session);
             renderMystery(session, false);
@@ -127,7 +140,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         if (slot >= 0 && slot < 27) return;
                         super.clicked(slot, button, input, clicker);
                     }
-                }, Component.literal("Mystery Crate | " + name)));
+                }, Component.literal("AbyssCrate | " + displayName(name))));
             return InteractionResult.SUCCESS;
         });
 
@@ -143,15 +156,15 @@ public final class AbyssCrateFabric implements ModInitializer {
                 }
                 MysterySession session = entry.getValue();
                 session.ticks++;
-                if (session.ticks <= ANIMATION_TICKS && session.ticks % animationInterval(session.ticks) == 0) {
+                if (session.ticks <= session.duration && session.ticks % animationInterval(session.ticks, session.duration) == 0) {
                     renderMystery(session, false);
                     openingPlayer.containerMenu.broadcastChanges();
                 }
-                if (session.ticks == ANIMATION_TICKS + 1) {
+                if (session.ticks == session.duration + 1) {
                     renderMystery(session, true);
                     openingPlayer.containerMenu.broadcastChanges();
                 }
-                if (session.ticks >= ANIMATION_TICKS + REVEAL_TICKS) {
+                if (session.ticks >= session.duration + REVEAL_TICKS) {
                     finishMystery(openingPlayer, session);
                     iterator.remove();
                 }
@@ -314,6 +327,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadCrates();
                         loadPlacements();
                         loadRewards();
+            loadSettings();
                         reply(ctx.getSource(), "reloaded", "");
                         return 1;
                     } catch (IOException ex) {
@@ -347,19 +361,115 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(10, button(Items.EMERALD, "Add Item"));
         view.setItem(12, button(Items.CHEST, "View Rewards"));
         view.setItem(14, button(Items.COMPARATOR, "Change Chance - select reward"));
-        view.setItem(16, button(Items.PAPER, "Crate: " + crate));
+        view.setItem(16, button(Items.COMPARATOR, "Crate Settings"));
         view.setItem(22, button(Items.BARRIER, "Close"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
                 if (slot >= 0 && slot < 27) {
                     if (slot == 10) openAddEditor(admin, crate);
                     else if (slot == 12 || slot == 14) openRewardsEditor(admin, crate, 0);
+                    else if (slot == 16) openCrateSettings(admin, crate);
                     else if (slot == 22) admin.closeContainer();
                     return;
                 }
                 super.clicked(slot, button, ContainerInput, player);
             }
         }, Component.literal("AbyssCrate | " + crate)));
+    }
+
+    // 3J: Per-crate settings persisted independently of rewards and placements.
+    private static synchronized void loadSettings() throws IOException {
+        Files.createDirectories(DIR);
+        SETTINGS.clear();
+        if (Files.exists(SETTINGS_FILE)) {
+            try (InputStream in = Files.newInputStream(SETTINGS_FILE)) { SETTINGS.load(in); }
+        }
+    }
+
+    private static synchronized void saveSettings() throws IOException {
+        Files.createDirectories(DIR);
+        try (OutputStream out = Files.newOutputStream(SETTINGS_FILE)) {
+            SETTINGS.store(out, "AbyssCrate 3J per-crate settings");
+        }
+    }
+
+    private static synchronized String setting(String crate, String key, String fallback) {
+        return SETTINGS.getProperty(crate + "." + key, fallback);
+    }
+
+    private static boolean settingBool(String crate, String key, boolean fallback) {
+        return Boolean.parseBoolean(setting(crate, key, Boolean.toString(fallback)));
+    }
+
+    private static int settingInt(String crate, String key, int fallback) {
+        try { return Integer.parseInt(setting(crate, key, Integer.toString(fallback))); }
+        catch (NumberFormatException ex) { return fallback; }
+    }
+
+    private static String displayName(String crate) {
+        return setting(crate, "name", crate);
+    }
+
+    private static void changeSetting(ServerPlayer admin, String crate, String key, String value) {
+        synchronized (SETTINGS) {
+            String prop = crate + "." + key;
+            String old = (String) SETTINGS.setProperty(prop, value);
+            try { saveSettings(); }
+            catch (IOException ex) {
+                if (old == null) SETTINGS.remove(prop);
+                else SETTINGS.setProperty(prop, old);
+                admin.sendSystemMessage(Component.literal("[AbyssCrate] Eroare la salvarea setarilor."));
+            }
+        }
+        openCrateSettings(admin, crate);
+    }
+
+    private static void openPlayerPreview(ServerPlayer player, String crate) {
+        List<Integer> ids = rewardIds(crate);
+        SimpleContainer view = new SimpleContainer(27);
+        for (int i = 0; i < 27 && i < ids.size(); i++) view.setItem(i, rewardIcon(crate, ids.get(i)));
+        player.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) return;
+                super.clicked(slot, button, input, clicker);
+            }
+        }, Component.literal("AbyssCrate Preview | " + displayName(crate))));
+    }
+
+    private static void openCrateSettings(ServerPlayer admin, String crate) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(10, button(Items.NAME_TAG, "Display Name: " + displayName(crate) + " (click: cycle)"));
+        view.setItem(11, button(Items.NETHER_STAR, "Animation: " + (settingBool(crate, "animation", true) ? "ON" : "OFF")));
+        view.setItem(12, button(Items.CLOCK, "Duration: " + (settingInt(crate, "duration", 100) / 20) + " seconds"));
+        view.setItem(13, button(Items.NOTE_BLOCK, "Sound effects: planned for 3K"));
+        view.setItem(14, button(Items.PAPER, "Broadcast Win: " + (settingBool(crate, "broadcast", false) ? "ON" : "OFF")));
+        view.setItem(15, button(Items.CHEST, "Preview Rewards: " + (settingBool(crate, "preview", true) ? "ON" : "OFF")));
+        view.setItem(22, button(Items.ARROW, "Back"));
+        admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) {
+                    switch (slot) {
+                        case 10 -> {
+                            String current = displayName(crate);
+                            String next = current.equals(crate) ? "AbyssCrate " + crate : crate;
+                            changeSetting(admin, crate, "name", next);
+                        }
+                        case 11 -> changeSetting(admin, crate, "animation", Boolean.toString(!settingBool(crate, "animation", true)));
+                        case 12 -> {
+                            int seconds = settingInt(crate, "duration", 100) / 20;
+                            changeSetting(admin, crate, "duration", Integer.toString((seconds >= 10 ? 3 : seconds + 1) * 20));
+                        }
+                        case 13 -> admin.sendSystemMessage(Component.literal("[AbyssCrate] Sunetele vor fi adaugate intr-o versiune viitoare."));
+                        case 14 -> changeSetting(admin, crate, "broadcast", Boolean.toString(!settingBool(crate, "broadcast", false)));
+                        case 15 -> changeSetting(admin, crate, "preview", Boolean.toString(!settingBool(crate, "preview", true)));
+                        case 22 -> openMainEditor(admin, crate);
+                        default -> { }
+                    }
+                    return;
+                }
+                super.clicked(slot, button, input, clicker);
+            }
+        }, Component.literal("AbyssCrate Settings | " + crate)));
     }
 
     // 3I: Add up to 18 different reward stacks in one operation.
@@ -522,15 +632,15 @@ public final class AbyssCrateFabric implements ModInitializer {
         }, Component.literal("Edit Reward #" + id)));
     }
 
-    private static int animationInterval(int ticks) {
-        if (ticks < 40) return 3;
-        if (ticks < 70) return 5;
+    private static int animationInterval(int ticks, int duration) {
+        if (ticks < duration * 0.4) return 3;
+        if (ticks < duration * 0.7) return 5;
         return 10;
     }
 
     private static void renderMystery(MysterySession session, boolean reveal) {
         for (int slot = 0; slot < 27; slot++) session.display.setItem(slot, ItemStack.EMPTY);
-        session.display.setItem(4, button(Items.NETHER_STAR, reveal ? "Recompensa castigatoare!" : "Mystery Crate - Se deschide..."));
+        session.display.setItem(4, button(Items.NETHER_STAR, reveal ? "Recompensa castigatoare!" : "AbyssCrate - Se deschide..."));
         for (int slot = 9; slot < 18; slot++) {
             RewardChoice candidate = reveal && slot == 13 ? session.prize : chooseReward(session.crate);
             if (candidate != null) session.display.setItem(slot, new ItemStack(candidate.item(), candidate.count()));
@@ -566,9 +676,12 @@ public final class AbyssCrateFabric implements ModInitializer {
             return;
         }
         player.getInventory().getItem(keySlot).shrink(1);
-        player.sendSystemMessage(Component.literal(message("reward-won", session.crate)
+        String winText = message("reward-won", session.crate)
             .replace("{item}", displayName)
-            .replace("{amount}", Integer.toString(session.prize.count()))));
+            .replace("{amount}", Integer.toString(session.prize.count()));
+        if (settingBool(session.crate, "broadcast", false)) {
+            player.getServer().getPlayerList().broadcastSystemMessage(Component.literal(player.getName().getString() + " » " + winText), false);
+        } else player.sendSystemMessage(Component.literal(winText));
     }
 
     // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
