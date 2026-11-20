@@ -94,6 +94,19 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Map<UUID, BattleInvite> BATTLE_INVITES = new HashMap<>();
     private static final long BATTLE_INVITE_TIMEOUT_MS = 60_000L;
     private record BattleInvite(UUID challenger, UUID target, String crate, long expiresAt) { }
+    // 4G.2: visual-only animation; rewards and milestones settle at acceptance, once.
+    private static final Map<UUID, BattleVisual> BATTLE_VISUALS = new HashMap<>();
+    private static final class BattleVisual {
+        final UUID opponent;
+        final String crate;
+        final RewardChoice own, rival;
+        final boolean won;
+        final SimpleContainer display = new SimpleContainer(27);
+        int ticks;
+        BattleVisual(UUID opponent, String crate, RewardChoice own, RewardChoice rival, boolean won) {
+            this.opponent = opponent; this.crate = crate; this.own = own; this.rival = rival; this.won = won;
+        }
+    }
     private static final int ANIMATION_TICKS = 100;
     private static final int REVEAL_TICKS = 20;
     private static int effectsTick = 0;
@@ -147,7 +160,13 @@ public final class AbyssCrateFabric implements ModInitializer {
                         ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
                         openBattleCrates(inviter, target.getUUID(), 0); return 1; })))
                 .then(Commands.literal("accept").executes(ctx -> acceptBattle(ctx.getSource().getPlayerOrException())))
-                .then(Commands.literal("deny").executes(ctx -> denyBattle(ctx.getSource().getPlayerOrException())))));
+                .then(Commands.literal("deny").executes(ctx -> denyBattle(ctx.getSource().getPlayerOrException())))
+                .then(Commands.literal("stats")
+                    .executes(ctx -> { openBattleStats(ctx.getSource().getPlayerOrException(), ctx.getSource().getPlayerOrException()); return 1; })
+                    .then(Commands.argument("player", EntityArgument.player()).executes(ctx -> {
+                        openBattleStats(ctx.getSource().getPlayerOrException(), EntityArgument.getPlayer(ctx, "player")); return 1;
+                    })))
+                .then(Commands.literal("top").executes(ctx -> { openBattleTop(ctx.getSource().getPlayerOrException(), 0); return 1; }))));
         });
 
         // 3O: Left-click opens the public preview; right-click remains key opening.
@@ -217,6 +236,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
+            tickBattleVisuals(server);
             // Lightweight ambient particles every second, only near players.
             if (++effectsTick >= 20) {
                 effectsTick = 0;
@@ -2103,7 +2123,8 @@ public final class AbyssCrateFabric implements ModInitializer {
             target.sendSystemMessage(Component.literal("[AbyssCrate] Challenger disconnected.")); return 0;
         }
         String crate = invite.crate();
-        if (ACTIVE_OPENINGS.containsKey(challenger.getUUID()) || ACTIVE_OPENINGS.containsKey(target.getUUID())) {
+        if (ACTIVE_OPENINGS.containsKey(challenger.getUUID()) || ACTIVE_OPENINGS.containsKey(target.getUUID())
+            || BATTLE_VISUALS.containsKey(challenger.getUUID()) || BATTLE_VISUALS.containsKey(target.getUUID())) {
             target.sendSystemMessage(Component.literal("[AbyssCrate] A player is already opening a crate.")); return 0;
         }
         if (countBattleKeys(challenger, crate) < 1 || countBattleKeys(target, crate) < 1) {
@@ -2141,9 +2162,124 @@ public final class AbyssCrateFabric implements ModInitializer {
             + second.count() + "x " + new ItemStack(second.item()).getHoverName().getString() + ". Both earned +1 milestone point.";
         challenger.sendSystemMessage(Component.literal(result));
         target.sendSystemMessage(Component.literal(result));
-        openBattleResult(challenger, target.getName().getString(), crate, first, second, challengerWins);
-        openBattleResult(target, challenger.getName().getString(), crate, second, first, !challengerWins);
+        recordBattleOutcome(challenger, target, challengerWins);
+        startBattleVisual(challenger, target, crate, first, second, challengerWins);
+        startBattleVisual(target, challenger, crate, second, first, !challengerWins);
         return 1;
+    }
+
+    // 4G.3: persist battle results alongside existing statistics (same UUID storage).
+    private static synchronized void recordBattleOutcome(ServerPlayer first, ServerPlayer second, boolean firstWins) {
+        updateBattleStats(first, firstWins);
+        updateBattleStats(second, !firstWins);
+        try { persistStatistics(); } catch (IOException ex) {
+            System.err.println("[AbyssCrate] Cannot save battle statistics: " + ex.getMessage());
+        }
+    }
+
+    private static void updateBattleStats(ServerPlayer player, boolean won) {
+        String base = "player." + player.getUUID() + ".battle.";
+        STATS.setProperty("player." + player.getUUID() + ".name", player.getName().getString());
+        incrementStat(base + "total");
+        incrementStat(base + (won ? "wins" : "losses"));
+        long streak = won ? stat(base + "streak") + 1 : 0;
+        STATS.setProperty(base + "streak", Long.toString(streak));
+        if (streak > stat(base + "best")) STATS.setProperty(base + "best", Long.toString(streak));
+    }
+
+    private static void openBattleStats(ServerPlayer viewer, ServerPlayer target) {
+        String base = "player." + target.getUUID() + ".battle.";
+        long total = stat(base + "total"), wins = stat(base + "wins");
+        SimpleContainer view = new SimpleContainer(54);
+        view.setItem(4, button(Items.PLAYER_HEAD, "Battle stats: " + target.getName().getString()));
+        view.setItem(19, button(Items.EMERALD, "Wins: " + wins));
+        view.setItem(21, button(Items.REDSTONE, "Losses: " + stat(base + "losses")));
+        view.setItem(23, button(Items.CHEST, "Battles: " + total));
+        view.setItem(25, button(Items.GOLD_INGOT, "Win rate: " + (total == 0 ? 0 : wins * 100 / total) + "%"));
+        view.setItem(30, button(Items.BLAZE_ROD, "Current streak: " + stat(base + "streak")));
+        view.setItem(32, button(Items.NETHER_STAR, "Best streak: " + stat(base + "best")));
+        view.setItem(49, button(Items.BOOK, "Battle leaderboard"));
+        showStatsMenu(viewer, "AbyssCrate | Battle Stats", view, slot -> {
+            if (slot == 49) openBattleTop(viewer, 0);
+        });
+    }
+
+    private static void openBattleTop(ServerPlayer viewer, int page) {
+        List<String> ids = new ArrayList<>();
+        for (String key : STATS.stringPropertyNames()) {
+            if (key.startsWith("player.") && key.endsWith(".battle.wins")) {
+                String id = key.substring(7, key.length() - ".battle.wins".length());
+                if (stat(key) > 0) ids.add(id);
+            }
+        }
+        ids.sort((a,b) -> {
+            int cmp = Long.compare(stat("player." + b + ".battle.wins"), stat("player." + a + ".battle.wins"));
+            return cmp != 0 ? cmp : a.compareTo(b);
+        });
+        int max = Math.max(0, (ids.size() - 1) / 45);
+        int current = Math.max(0, Math.min(page, max));
+        SimpleContainer view = new SimpleContainer(54);
+        for (int i = 0; i < 45 && current * 45 + i < ids.size(); i++) {
+            String id = ids.get(current * 45 + i);
+            String base = "player." + id + ".battle.";
+            String name = STATS.getProperty("player." + id + ".name", id);
+            view.setItem(i, button(Items.PLAYER_HEAD, "#" + (current * 45 + i + 1) + " " + name
+                + " | Wins: " + stat(base + "wins") + " | Losses: " + stat(base + "losses")));
+        }
+        view.setItem(45, button(Items.ARROW, "Previous"));
+        view.setItem(49, button(Items.BARRIER, "Close"));
+        view.setItem(53, button(Items.ARROW, "Next"));
+        showStatsMenu(viewer, "AbyssCrate | Battle Top", view, slot -> {
+            if (slot == 45) openBattleTop(viewer, current - 1);
+            else if (slot == 53) openBattleTop(viewer, current + 1);
+            else if (slot == 49) viewer.closeContainer();
+        });
+    }
+
+    // Animation is display-only: settlement happens before GUI starts, preventing duplicate payouts
+    // if either participant closes the inventory or disconnects.
+    private static void startBattleVisual(ServerPlayer viewer, ServerPlayer opponent, String crate,
+                                          RewardChoice own, RewardChoice rival, boolean won) {
+        BattleVisual visual = new BattleVisual(opponent.getUUID(), crate, own, rival, won);
+        BATTLE_VISUALS.put(viewer.getUUID(), visual);
+        viewer.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(
+            MenuType.GENERIC_9x3, id, inv, visual.display, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) return;
+                super.clicked(slot, button, input, clicker);
+            }
+            @Override public ItemStack quickMoveStack(Player clicker, int slot) { return ItemStack.EMPTY; }
+        }, Component.literal("AbyssCrate | Battle Animation")));
+    }
+
+    private static void tickBattleVisuals(net.minecraft.server.MinecraftServer server) {
+        var iterator = BATTLE_VISUALS.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            BattleVisual visual = entry.getValue();
+            ServerPlayer viewer = server.getPlayerList().getPlayer(entry.getKey());
+            if (viewer == null) { iterator.remove(); continue; }
+            visual.ticks++;
+            if (visual.ticks <= 60) {
+                int remaining = Math.max(1, 4 - (visual.ticks + 19) / 20);
+                visual.display.setItem(4, button(Items.CLOCK, "Battle starts in " + remaining + "..."));
+            } else if (visual.ticks <= 140) {
+                if (visual.ticks % 5 == 0) {
+                    RewardChoice a = chooseReward(visual.crate);
+                    RewardChoice b = chooseReward(visual.crate);
+                    if (a != null && b != null) {
+                        visual.display.setItem(11, button(a.item(), "YOUR ROLL..."));
+                        visual.display.setItem(15, button(b.item(), "OPPONENT ROLL..."));
+                        visual.display.setItem(4, button(Items.CLOCK, "Rolling..."));
+                    }
+                }
+            } else {
+                iterator.remove();
+                String opponent = server.getPlayerList().getPlayer(visual.opponent) == null ? "Opponent"
+                    : server.getPlayerList().getPlayer(visual.opponent).getName().getString();
+                openBattleResult(viewer, opponent, visual.crate, visual.own, visual.rival, visual.won);
+            }
+        }
     }
 
     private static void openBattleResult(ServerPlayer viewer, String opponent, String crate,
