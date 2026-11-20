@@ -8,6 +8,13 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.item.Item;
+import net.minecraft.resources.Identifier;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Comparator;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -103,47 +110,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                                 }
                             }
                             ServerPlayer admin = ctx.getSource().getPlayerOrException();
-                            SimpleContainer inventory = new SimpleContainer(27);
-                            ItemStack info = new ItemStack(Items.PAPER);
-                            info.set(DataComponents.CUSTOM_NAME, Component.literal("Pune un item in slotul de sub aceasta hartie, apoi inchide meniul"));
-                            inventory.setItem(4, info);
-                            ItemStack hint = new ItemStack(Items.BARRIER);
-                            hint.set(DataComponents.CUSTOM_NAME, Component.literal("Slot de adaugare: mijloc, randul 2 (slot 13)"));
-                            inventory.setItem(22, hint);
-                            admin.openMenu(new SimpleMenuProvider(
-                                (syncId, playerInventory, player) -> new ChestMenu(
-                                    net.minecraft.world.inventory.MenuType.GENERIC_9x3, syncId, playerInventory, inventory, 3) {
-                                    @Override
-                                    public void removed(Player closingPlayer) {
-                                        // Salvam copia itemului depus in slotul 13.
-                                        ItemStack reward = inventory.getItem(13).copy();
-                                        if (!reward.isEmpty()) {
-                                            try {
-                                                String itemId = BuiltInRegistries.ITEM.getKey(reward.getItem()).toString();
-                                                synchronized (REWARDS) {
-                                                    int next = 1;
-                                                    while (REWARDS.containsKey(name + "." + next)) next++;
-                                                    REWARDS.setProperty(name + "." + next, itemId + "|" + reward.getCount());
-                                                    saveRewards();
-                                                }
-                                                closingPlayer.sendSystemMessage(Component.literal("[AbyssCrate] Recompensa salvata pentru " + name + ": " + itemId + " x" + reward.getCount()));
-                                            } catch (IOException ex) {
-                                                closingPlayer.sendSystemMessage(Component.literal("[AbyssCrate] Eroare la salvarea recompensei."));
-                                            }
-                                        }
-                                        // Returnam itemele reale, ca editorul sa nu le piarda.
-                                        inventory.setItem(4, ItemStack.EMPTY);
-                                        inventory.setItem(22, ItemStack.EMPTY);
-                                        for (int slot = 0; slot < 27; slot++) {
-                                            ItemStack stack = inventory.removeItemNoUpdate(slot);
-                                            if (!stack.isEmpty() && !closingPlayer.getInventory().add(stack)) {
-                                                closingPlayer.getInventory().add(stack);
-                                            }
-                                        }
-                                        super.removed(closingPlayer);
-                                    }
-                                },
-                                Component.literal("AbyssCrate | " + name)));
+                            openMainEditor(admin, name);
                             return 1;
                         })))
             );
@@ -296,6 +263,168 @@ public final class AbyssCrateFabric implements ModInitializer {
                     return 1;
                 })));
         });
+    }
+
+    // 3F: all editor menus are server-side and block moving the display buttons.
+    private static ItemStack button(Item item, String label) {
+        ItemStack stack = new ItemStack(item);
+        stack.set(DataComponents.CUSTOM_NAME, Component.literal(label));
+        return stack;
+    }
+
+    private static void openMainEditor(ServerPlayer admin, String crate) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(10, button(Items.LIME_DYE, "Add Item"));
+        view.setItem(12, button(Items.CHEST, "View Rewards"));
+        view.setItem(14, button(Items.COMPARATOR, "Change Chance - select reward"));
+        view.setItem(16, button(Items.PAPER, "Crate: " + crate));
+        view.setItem(22, button(Items.BARRIER, "Close"));
+        admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+                if (slot >= 0 && slot < 27) {
+                    if (slot == 10) openAddEditor(admin, crate);
+                    else if (slot == 12 || slot == 14) openRewardsEditor(admin, crate, 0);
+                    else if (slot == 22) admin.closeContainer();
+                    return;
+                }
+                super.clicked(slot, button, clickType, player);
+            }
+        }, Component.literal("AbyssCrate | " + crate)));
+    }
+
+    private static void openAddEditor(ServerPlayer admin, String crate) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(4, button(Items.PAPER, "Pune recompensa in slotul 13, apoi inchide"));
+        view.setItem(22, button(Items.BARRIER, "Inchide pentru a salva"));
+        admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+                if (slot >= 0 && slot < 27 && slot != 13) return;
+                super.clicked(slot, button, clickType, player);
+            }
+            @Override public void removed(Player player) {
+                ItemStack reward = view.removeItemNoUpdate(13);
+                if (!reward.isEmpty()) {
+                    String itemId = BuiltInRegistries.ITEM.getKey(reward.getItem()).toString();
+                    try {
+                        synchronized (REWARDS) {
+                            int next = 1;
+                            while (REWARDS.containsKey(crate + "." + next)) next++;
+                            REWARDS.setProperty(crate + "." + next, itemId + "|" + reward.getCount() + "|10");
+                            saveRewards();
+                        }
+                        player.sendSystemMessage(Component.literal("[AbyssCrate] Reward saved: " + itemId));
+                    } catch (IOException ex) {
+                        player.sendSystemMessage(Component.literal("[AbyssCrate] Could not save reward."));
+                    }
+                    // Try to return the real item; do not duplicate it on a failed insert.
+                    player.getInventory().add(reward);
+                }
+                super.removed(player);
+            }
+        }, Component.literal("Add Reward | " + crate)));
+    }
+
+    private static List<Integer> rewardIds(String crate) {
+        List<Integer> ids = new ArrayList<>();
+        synchronized (REWARDS) {
+            for (String key : REWARDS.stringPropertyNames()) {
+                if (!key.startsWith(crate + ".")) continue;
+                try { ids.add(Integer.parseInt(key.substring(crate.length() + 1))); }
+                catch (NumberFormatException ignored) { }
+            }
+        }
+        ids.sort(Comparator.naturalOrder());
+        return ids;
+    }
+
+    private static ItemStack rewardIcon(String crate, int id) {
+        String value;
+        synchronized (REWARDS) { value = REWARDS.getProperty(crate + "." + id, ""); }
+        String[] parts = value.split("\\|");
+        Item item = Items.BARRIER;
+        if (parts.length > 0) {
+            try { item = BuiltInRegistries.ITEM.getValue(Identifier.parse(parts[0])); }
+            catch (Exception ignored) { }
+        }
+        ItemStack icon = new ItemStack(item == null ? Items.BARRIER : item);
+        icon.set(DataComponents.CUSTOM_NAME, Component.literal("#" + id + " " + value + " (click to edit)"));
+        return icon;
+    }
+
+    private static void openRewardsEditor(ServerPlayer admin, String crate, int page) {
+        List<Integer> ids = rewardIds(crate);
+        int maxPage = Math.max(0, (ids.size() - 1) / 18);
+        int current = Math.max(0, Math.min(page, maxPage));
+        SimpleContainer view = new SimpleContainer(27);
+        for (int i = 0; i < 18 && current * 18 + i < ids.size(); i++)
+            view.setItem(i, rewardIcon(crate, ids.get(current * 18 + i)));
+        view.setItem(18, button(Items.ARROW, "Previous page"));
+        view.setItem(22, button(Items.BARRIER, "Back"));
+        view.setItem(26, button(Items.ARROW, "Next page"));
+        admin.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, sync, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+                if (slot >= 0 && slot < 27) {
+                    int index = current * 18 + slot;
+                    if (slot < 18 && index < ids.size()) openRewardDetails(admin, crate, ids.get(index), current);
+                    else if (slot == 18) openRewardsEditor(admin, crate, current - 1);
+                    else if (slot == 22) openMainEditor(admin, crate);
+                    else if (slot == 26) openRewardsEditor(admin, crate, current + 1);
+                    return;
+                }
+                super.clicked(slot, button, clickType, player);
+            }
+        }, Component.literal("Rewards | " + crate + " | " + (current + 1))));
+    }
+
+    private static void openRewardDetails(ServerPlayer admin, String crate, int id, int page) {
+        String key = crate + "." + id;
+        String value;
+        synchronized (REWARDS) { value = REWARDS.getProperty(key); }
+        if (value == null) { openRewardsEditor(admin, crate, page); return; }
+        String[] parts = value.split("\\|");
+        int chance = parseChance(parts);
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(4, rewardIcon(crate, id));
+        view.setItem(10, button(Items.RED_DYE, "-10%"));
+        view.setItem(11, button(Items.REDSTONE, "-1%"));
+        view.setItem(13, button(Items.PAPER, "Chance: " + chance + "%"));
+        view.setItem(15, button(Items.EMERALD, "+1%"));
+        view.setItem(16, button(Items.LIME_DYE, "+10%"));
+        view.setItem(21, button(Items.LAVA_BUCKET, "Remove Reward"));
+        view.setItem(23, button(Items.ARROW, "Back"));
+        admin.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, sync, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ClickType clickType, Player player) {
+                if (slot >= 0 && slot < 27) {
+                    if (slot == 23) { openRewardsEditor(admin, crate, page); return; }
+                    int delta = slot == 10 ? -10 : slot == 11 ? -1 : slot == 15 ? 1 : slot == 16 ? 10 : 0;
+                    if (slot == 21 || delta != 0) {
+                        synchronized (REWARDS) {
+                            String existing = REWARDS.getProperty(key);
+                            if (existing != null) {
+                                if (slot == 21) REWARDS.remove(key);
+                                else {
+                                    String[] fields = existing.split("\\|");
+                                    int adjusted = Math.max(0, Math.min(100, parseChance(fields) + delta));
+                                    REWARDS.setProperty(key, fields[0] + "|" + (fields.length > 1 ? fields[1] : "1") + "|" + adjusted);
+                                }
+                                try { saveRewards(); }
+                                catch (IOException e) { admin.sendSystemMessage(Component.literal("[AbyssCrate] Save error")); }
+                            }
+                        }
+                        if (slot == 21) openRewardsEditor(admin, crate, page);
+                        else openRewardDetails(admin, crate, id, page);
+                    }
+                    return;
+                }
+                super.clicked(slot, button, clickType, player);
+            }
+        }, Component.literal("Edit Reward #" + id)));
+    }
+
+    private static int parseChance(String[] fields) {
+        if (fields.length < 3) return 10; // Existing 3E rewards have no chance field.
+        try { return Math.max(0, Math.min(100, Integer.parseInt(fields[2]))); }
+        catch (NumberFormatException ex) { return 10; }
     }
 
     private static synchronized void loadRewards() throws IOException {
