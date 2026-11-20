@@ -83,6 +83,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Properties RARITIES = new Properties();
     private static final Path SETTINGS_FILE = DIR.resolve("crate-settings.properties");
     private static final Properties SETTINGS = new Properties();
+    private static final Path HUB_FILE = DIR.resolve("menu.properties");
+    private static final Properties HUB = new Properties();
     private static final Path HOLOGRAMS_FILE = DIR.resolve("holograms.properties");
     private static final Properties HOLOGRAMS = new Properties();
     private static final String DEFAULT_GRADIENT_PREFIX = "&#004FFF[&#005CFFA&#0067FFb&#0072FFy&#007CFFs&#0086FFs&#008FFFC&#0098FFr&#00A0FFa&#00A8FFt&#00B0FFe&#00B7FF]&r ";
@@ -143,6 +145,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadRewards();
             loadRarities();
             loadSettings();
+            loadHub();
             loadHolograms();
             loadKeys();
             loadStatistics();
@@ -565,6 +568,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadRewards();
                         loadRarities();
             loadSettings();
+            loadHub();
             loadHolograms();
             loadKeys();
                         loadMilestones();
@@ -590,6 +594,82 @@ public final class AbyssCrateFabric implements ModInitializer {
         });
     }
 
+    // 5M.3: Fully configurable hub appearance, loaded at startup and /crate reload.
+    private static synchronized void loadHub() throws IOException {
+        Files.createDirectories(DIR);
+        HUB.clear();
+        if (Files.exists(HUB_FILE)) {
+            try (InputStream in = Files.newInputStream(HUB_FILE)) { HUB.load(in); }
+        } else {
+            HUB.setProperty("frame.material", "QUARTZ_BLOCK");
+            HUB.setProperty("frame.name", " ");
+            HUB.setProperty("frame.enabled", "true");
+            HUB.setProperty("menu.title", "AbyssMC | Crate Menu");
+            HUB.setProperty("admin.title", "AbyssMC | Admin Panel");
+            HUB.setProperty("crates.title", "AbyssMC | Crates");
+            HUB.setProperty("admincrates.title", "AbyssMC | Admin Crates");
+            HUB.setProperty("menu.10.material", "CHEST");
+            HUB.setProperty("menu.10.name", "&6Crates & Rewards");
+            HUB.setProperty("menu.10.lore", "&7Vezi crate-urile si recompensele|&eClick pentru lista");
+            HUB.setProperty("menu.12.material", "GOLD_INGOT");
+            HUB.setProperty("menu.12.name", "&eMilestone Rewards");
+            HUB.setProperty("menu.14.material", "DIAMOND_SWORD");
+            HUB.setProperty("menu.14.name", "&bCrate Battle");
+            HUB.setProperty("menu.16.material", "BOOK");
+            HUB.setProperty("menu.16.name", "&aMy Statistics");
+            HUB.setProperty("menu.28.material", "CLOCK");
+            HUB.setProperty("menu.28.name", "&fReward History");
+            HUB.setProperty("menu.30.material", "EMERALD");
+            HUB.setProperty("menu.30.name", "&aCrate Leaderboard");
+            HUB.setProperty("menu.32.material", "IRON_SWORD");
+            HUB.setProperty("menu.32.name", "&bBattle Statistics");
+            HUB.setProperty("menu.34.material", "GOLDEN_SWORD");
+            HUB.setProperty("menu.34.name", "&6Battle Leaderboard");
+            HUB.setProperty("menu.40.material", "EMERALD");
+            HUB.setProperty("menu.40.name", "&aAbyssMC");
+            HUB.setProperty("menu.40.lore", "&7Bucura-te de crate-uri si battle-uri!");
+            HUB.setProperty("menu.admin40.material", "COMMAND_BLOCK");
+            HUB.setProperty("menu.admin40.name", "&cAdmin Control Panel");
+            HUB.setProperty("menu.admin40.lore", "&7Editoare, setari si administrare|&eClick pentru panoul admin");
+            HUB.setProperty("menu.49.material", "BARRIER");
+            HUB.setProperty("menu.49.name", "&cClose Menu");
+            HUB.setProperty("admin.11.material", "CHEST");
+            HUB.setProperty("admin.11.name", "&6Crate Editors");
+            HUB.setProperty("admin.13.material", "NETHER_STAR");
+            HUB.setProperty("admin.13.name", "&eMilestone Admin");
+            HUB.setProperty("admin.15.material", "BOOK");
+            HUB.setProperty("admin.15.name", "&bGlobal Statistics");
+            HUB.setProperty("admin.31.material", "OAK_SIGN");
+            HUB.setProperty("admin.31.name", "&dHolograms & Settings");
+            HUB.setProperty("admin.48.material", "ARROW");
+            HUB.setProperty("admin.48.name", "&7Back to Main Menu");
+            HUB.setProperty("admin.49.material", "BARRIER");
+            HUB.setProperty("admin.49.name", "&cClose");
+            try (OutputStream out = Files.newOutputStream(HUB_FILE)) {
+                HUB.store(out, "AbyssCrate 5M.3 - customize menu and admin buttons. Use /crate reload. Do not change slot numbers; they define button actions.");
+            }
+        }
+    }
+
+    private static String hubValue(String key, String fallback) {
+        return HUB.getProperty(key, fallback);
+    }
+
+    private static Item hubMaterial(String key, Item fallback) {
+        String name = hubValue(key, "").trim().toUpperCase(java.util.Locale.ROOT);
+        if (name.startsWith("MINECRAFT:")) name = name.substring(10);
+        if (name.isEmpty()) return fallback;
+        try { return (Item) Items.class.getField(name).get(null); }
+        catch (ReflectiveOperationException | ClassCastException ignored) { return fallback; }
+    }
+
+    private static ItemStack configuredHubButton(String key, Item fallbackItem, String fallbackName, String... fallbackLore) {
+        Item item = hubMaterial(key + ".material", fallbackItem);
+        String name = hubValue(key + ".name", fallbackName);
+        String rawLore = hubValue(key + ".lore", String.join("|", fallbackLore));
+        return hubButton(item, name, rawLore.isEmpty() ? new String[0] : rawLore.split("\\|", -1));
+    }
+
     // 5M: One central menu; all privileged actions are rechecked on click.
     private static boolean canManageCrates(ServerPlayer player) {
         return player.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN);
@@ -606,8 +686,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static void hubFrame(SimpleContainer view) {
         for (int slot = 0; slot < 54; slot++) {
             int row = slot / 9, col = slot % 9;
-            if (row == 0 || row == 5 || col == 0 || col == 8)
-                view.setItem(slot, button(Items.QUARTZ_BLOCK, " "));
+            if (Boolean.parseBoolean(hubValue("frame.enabled", "true")) && (row == 0 || row == 5 || col == 0 || col == 8))
+                view.setItem(slot, button(hubMaterial("frame.material", Items.QUARTZ_BLOCK), hubValue("frame.name", " ")));
         }
     }
 
@@ -615,22 +695,22 @@ public final class AbyssCrateFabric implements ModInitializer {
         boolean admin = canManageCrates(player);
         SimpleContainer view = new SimpleContainer(54);
         hubFrame(view);
-        view.setItem(4, hubButton(Items.NETHER_STAR, "AbyssMC | Crate Hub", "&7Toate functiile intr-un singur loc", admin ? "&6Mod administrator activ" : "&aMeniu jucator"));
-        view.setItem(10, hubButton(Items.CHEST, "&6Crates & Rewards", "&7Vezi crate-urile si recompensele", "&eClick pentru lista"));
-        view.setItem(12, hubButton(Items.GOLD_INGOT, "&eMilestone Rewards", "&7Progresul si recompensele tale", "&eClick pentru deschidere"));
-        view.setItem(14, hubButton(Items.DIAMOND_SWORD, "&bCrate Battle", "&7Provoaca alti jucatori", "&eClick pentru invitatii"));
-        view.setItem(16, hubButton(Items.BOOK, "&aMy Statistics", "&7Deschideri, raritati si istoric"));
-        view.setItem(28, hubButton(Items.CLOCK, "&fReward History", "&7Ultimele recompense castigate"));
-        view.setItem(30, hubButton(Items.EMERALD, "&aCrate Leaderboard", "&7Top jucatori dupa deschideri"));
-        view.setItem(32, hubButton(Items.IRON_SWORD, "&bBattle Statistics", "&7Victorii, infrangeri si streak"));
-        view.setItem(34, hubButton(Items.GOLDEN_SWORD, "&6Battle Leaderboard", "&7Top jucatori dupa victorii"));
+        view.setItem(4, configuredHubButton("menu.4", Items.NETHER_STAR, "AbyssMC | Crate Hub", "&7Toate functiile intr-un singur loc", admin ? "&6Mod administrator activ" : "&aMeniu jucator"));
+        view.setItem(10, configuredHubButton("menu.10", Items.CHEST, "&6Crates & Rewards", "&7Vezi crate-urile si recompensele", "&eClick pentru lista"));
+        view.setItem(12, configuredHubButton("menu.12", Items.GOLD_INGOT, "&eMilestone Rewards", "&7Progresul si recompensele tale", "&eClick pentru deschidere"));
+        view.setItem(14, configuredHubButton("menu.14", Items.DIAMOND_SWORD, "&bCrate Battle", "&7Provoaca alti jucatori", "&eClick pentru invitatii"));
+        view.setItem(16, configuredHubButton("menu.16", Items.BOOK, "&aMy Statistics", "&7Deschideri, raritati si istoric"));
+        view.setItem(28, configuredHubButton("menu.28", Items.CLOCK, "&fReward History", "&7Ultimele recompense castigate"));
+        view.setItem(30, configuredHubButton("menu.30", Items.EMERALD, "&aCrate Leaderboard", "&7Top jucatori dupa deschideri"));
+        view.setItem(32, configuredHubButton("menu.32", Items.IRON_SWORD, "&bBattle Statistics", "&7Victorii, infrangeri si streak"));
+        view.setItem(34, configuredHubButton("menu.34", Items.GOLDEN_SWORD, "&6Battle Leaderboard", "&7Top jucatori dupa victorii"));
         if (admin) {
-            view.setItem(40, hubButton(Items.COMMAND_BLOCK, "&cAdmin Control Panel", "&7Editoare, setari si administrare", "&eClick pentru panoul admin"));
+            view.setItem(40, configuredHubButton("menu.admin40", Items.COMMAND_BLOCK, "&cAdmin Control Panel", "&7Editoare, setari si administrare", "&eClick pentru panoul admin"));
         } else {
-            view.setItem(40, hubButton(Items.EMERALD, "&aAbyssMC", "&7Bucura-te de crate-uri si battle-uri!"));
+            view.setItem(40, configuredHubButton("menu.40", Items.EMERALD, "&aAbyssMC", "&7Bucura-te de crate-uri si battle-uri!"));
         }
-        view.setItem(49, hubButton(Items.BARRIER, "&cClose Menu", "&7Inchide meniul"));
-        showStatsMenu(player, "AbyssMC | Crate Menu", view, slot -> {
+        view.setItem(49, configuredHubButton("menu.49", Items.BARRIER, "&cClose Menu", "&7Inchide meniul"));
+        showStatsMenu(player, hubValue("menu.title", "AbyssMC | Crate Menu"), view, slot -> {
             switch (slot) {
                 case 10 -> openHubCrateList(player, false, 0);
                 case 12 -> openMilestones(player);
@@ -657,7 +737,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(4, hubButton(admin ? Items.COMMAND_BLOCK : Items.CHEST,
             admin ? "&cManage Crates" : "&6Browse Crates", admin ? "&7Alege un crate pentru editor" : "&7Alege un crate pentru preview"));
         for (int i = 0; i < 28 && current * 28 + i < crates.size(); i++) {
-            String name = crates.get(current * 36 + i);
+            String name = crates.get(current * 28 + i);
             int row = i / 7, col = i % 7;
             int slot = 9 + row * 9 + col + 1;
             if (slot >= 45) break;
@@ -668,7 +748,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(48, hubButton(Items.ARROW, "&7Back"));
         view.setItem(49, hubButton(Items.BARRIER, "&cClose"));
         view.setItem(53, hubButton(Items.ARROW, "&eNext Page"));
-        showStatsMenu(player, admin ? "AbyssMC | Admin Crates" : "AbyssMC | Crates", view, slot -> {
+        showStatsMenu(player, admin ? hubValue("admincrates.title", "AbyssMC | Admin Crates") : hubValue("crates.title", "AbyssMC | Crates"), view, slot -> {
             if (slot >= 10 && slot < 45 && slot % 9 >= 1 && slot % 9 <= 7) {
                 int index = current * 28 + ((slot / 9) - 1) * 7 + (slot % 9) - 1;
                 if (index >= 0 && index < crates.size()) {
@@ -687,14 +767,14 @@ public final class AbyssCrateFabric implements ModInitializer {
         if (!canManageCrates(player)) { openCrateHub(player); return; }
         SimpleContainer view = new SimpleContainer(54);
         hubFrame(view);
-        view.setItem(4, hubButton(Items.COMMAND_BLOCK, "&cAbyssMC | Admin Panel", "&7Acces restrictionat la administratori"));
-        view.setItem(11, hubButton(Items.CHEST, "&6Crate Editors", "&7Recompense, chei, raritati si animatii"));
-        view.setItem(13, hubButton(Items.NETHER_STAR, "&eMilestone Admin", "&7Vizualizeaza recompensele configurate"));
-        view.setItem(15, hubButton(Items.BOOK, "&bGlobal Statistics", "&7Total deschideri si statistici globale"));
-        view.setItem(31, hubButton(Items.OAK_SIGN, "&dHolograms & Settings", "&7Alege un crate din editor", "&7si deschide setarile / hologramele"));
-        view.setItem(48, hubButton(Items.ARROW, "&7Back to Main Menu"));
-        view.setItem(49, hubButton(Items.BARRIER, "&cClose"));
-        showStatsMenu(player, "AbyssMC | Admin Panel", view, slot -> {
+        view.setItem(4, configuredHubButton("admin.4", Items.COMMAND_BLOCK, "&cAbyssMC | Admin Panel", "&7Acces restrictionat la administratori"));
+        view.setItem(11, configuredHubButton("admin.11", Items.CHEST, "&6Crate Editors", "&7Recompense, chei, raritati si animatii"));
+        view.setItem(13, configuredHubButton("admin.13", Items.NETHER_STAR, "&eMilestone Admin", "&7Vizualizeaza recompensele configurate"));
+        view.setItem(15, configuredHubButton("admin.15", Items.BOOK, "&bGlobal Statistics", "&7Total deschideri si statistici globale"));
+        view.setItem(31, configuredHubButton("admin.31", Items.OAK_SIGN, "&dHolograms & Settings", "&7Alege un crate din editor", "&7si deschide setarile / hologramele"));
+        view.setItem(48, configuredHubButton("admin.48", Items.ARROW, "&7Back to Main Menu"));
+        view.setItem(49, configuredHubButton("admin.49", Items.BARRIER, "&cClose"));
+        showStatsMenu(player, hubValue("admin.title", "AbyssMC | Admin Panel"), view, slot -> {
             if (!canManageCrates(player)) { player.closeContainer(); return; }
             switch (slot) {
                 case 11, 31 -> openHubCrateList(player, true, 0);
