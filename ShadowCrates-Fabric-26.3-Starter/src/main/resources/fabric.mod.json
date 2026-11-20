@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "abysscrate_fabric",
+  "version": "${version}",
+  "name": "AbyssCrate Fabric (Starter)",
+  "description": "Proiect initial pentru rescrierea AbyssCrate pe Fabric 26.3; nu este portare completa.",
+  "environment": "server",
+  "entrypoints": { "main": ["ro.abyssmc.abysscrate.AbyssCrateFabric"] },
+  "depends": { "fabricloader": ">=0.18.0", "minecraft": "26.3", "java": ">=25", "fabric-api": "*" }
+}
