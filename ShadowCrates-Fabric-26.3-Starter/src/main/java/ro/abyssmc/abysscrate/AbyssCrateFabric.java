@@ -85,10 +85,14 @@ public final class AbyssCrateFabric implements ModInitializer {
         final String crate;
         final RewardChoice prize;
         final int duration;
-        final SimpleContainer display = new SimpleContainer(27);
+        final String style;
+        final SimpleContainer display;
+        int frame;
         int ticks;
         MysterySession(String crate, RewardChoice prize) {
-            this.duration = settingInt(crate, "duration", 100);
+            this.duration = Math.max(20, settingInt(crate, "duration", 100));
+            this.style = animationStyle(crate);
+            this.display = new SimpleContainer("ROULETTE".equals(style) ? 54 : 27);
             this.crate = crate;
             this.prize = prize;
         }
@@ -161,11 +165,14 @@ public final class AbyssCrateFabric implements ModInitializer {
             ACTIVE_OPENINGS.put(serverPlayer.getUUID(), session);
             renderMystery(session, false);
             serverPlayer.openMenu(new SimpleMenuProvider((id, inv, viewer) ->
-                new ChestMenu(MenuType.GENERIC_9x3, id, inv, session.display, 3) {
+                new ChestMenu(session.display.getContainerSize() == 54 ? MenuType.GENERIC_9x6 : MenuType.GENERIC_9x3,
+                    id, inv, session.display, session.display.getContainerSize() / 9) {
                     @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
-                        // Prevent moving preview items out of the animated chest.
-                        if (slot >= 0 && slot < 27) return;
+                        if (slot >= 0 && slot < session.display.getContainerSize()) return;
                         super.clicked(slot, button, input, clicker);
+                    }
+                    @Override public ItemStack quickMoveStack(Player clicker, int slot) {
+                        return ItemStack.EMPTY;
                     }
                 }, Component.literal("AbyssCrate | " + displayName(name))));
             return InteractionResult.SUCCESS;
@@ -744,6 +751,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(20, button(Items.END_ROD, "Hologram: " + (settingBool(crate, "hologram", true) ? "ON" : "OFF")));
         view.setItem(19, button(Items.OAK_SIGN, "Hologram Editor"));
         view.setItem(22, button(Items.ARROW, "Back"));
+        view.setItem(23, button(Items.CLOCK, "Animation Style: " + animationStyle(crate) + " (click to cycle)"));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
                 if (slot >= 0 && slot < 27) {
@@ -770,6 +778,11 @@ public final class AbyssCrateFabric implements ModInitializer {
                         case 20 -> changeSetting(admin, crate, "hologram", Boolean.toString(!settingBool(crate, "hologram", true)));
                         case 19 -> openHologramEditor(admin, crate);
                         case 22 -> openMainEditor(admin, crate);
+                        case 23 -> changeSetting(admin, crate, "animation_style", switch (animationStyle(crate)) {
+                            case "CLASSIC" -> "ROULETTE";
+                            case "ROULETTE" -> "EPIC";
+                            default -> "CLASSIC";
+                        });
                         default -> { }
                     }
                     return;
@@ -1087,17 +1100,58 @@ public final class AbyssCrateFabric implements ModInitializer {
         return 10;
     }
 
+    // 3Q.1: Style is snapshotted at opening; changing settings never alters an active session.
+    private static String animationStyle(String crate) {
+        String value = setting(crate, "animation_style", "CLASSIC").toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "ROULETTE", "EPIC" -> value;
+            default -> "CLASSIC";
+        };
+    }
+
+    private static ItemStack rewardIcon(RewardChoice reward) {
+        return reward == null ? ItemStack.EMPTY : new ItemStack(reward.item(), reward.count());
+    }
+
     private static void renderMystery(MysterySession session, boolean reveal) {
-        for (int slot = 0; slot < 27; slot++) session.display.setItem(slot, ItemStack.EMPTY);
-        session.display.setItem(4, button(Items.NETHER_STAR, reveal ? "Recompensa castigatoare!" : "AbyssCrate - Se deschide..."));
-        for (int slot = 9; slot < 18; slot++) {
-            RewardChoice candidate = reveal && slot == 13 ? session.prize : chooseReward(session.crate);
-            if (candidate != null) session.display.setItem(slot, new ItemStack(candidate.item(), candidate.count()));
-        }
-        if (reveal) {
-            session.display.setItem(22, button(Items.EMERALD, "Felicitari!"));
-        } else {
-            session.display.setItem(22, button(Items.CLOCK, "Asteapta rezultatul..."));
+        for (int slot = 0; slot < session.display.getContainerSize(); slot++)
+            session.display.setItem(slot, ItemStack.EMPTY);
+        session.frame++;
+        switch (session.style) {
+            case "ROULETTE" -> {
+                // The center (slot 22) is the winner indicator. Visual rolls never select the prize.
+                for (int slot = 18; slot <= 26; slot++) {
+                    RewardChoice candidate = reveal && slot == 22 ? session.prize : chooseReward(session.crate);
+                    session.display.setItem(slot, rewardIcon(candidate));
+                }
+                session.display.setItem(4, button(Items.NETHER_STAR, "ROULETTE | " + (reveal ? "WINNER!" : "Rolling...")));
+                session.display.setItem(13, button(Items.ARROW, "\u25bc WINNER \u25bc"));
+                session.display.setItem(31, button(Items.ARROW, "\u25b2 WINNER \u25b2"));
+                session.display.setItem(49, button(Items.EMERALD, reveal ? "Recompensa castigatoare!" : "Se incetineste..."));
+            }
+            case "EPIC" -> {
+                session.display.setItem(4, button(Items.NETHER_STAR, reveal ? "EPIC REVEAL | WINNER!" : "EPIC REVEAL"));
+                if (reveal) {
+                    session.display.setItem(13, rewardIcon(session.prize));
+                    session.display.setItem(22, button(Items.EMERALD, "Felicitari!"));
+                } else {
+                    int remaining = Math.max(1, (session.duration - session.ticks + 19) / 20);
+                    session.display.setItem(13, button(Items.ENDER_CHEST, "Recompensa misterioasa"));
+                    session.display.setItem(22, button(Items.CLOCK, "Dezvaluire in " + remaining + "s"));
+                    for (int slot : new int[]{10, 12, 14, 16})
+                        session.display.setItem(slot, button(Items.AMETHYST_SHARD, "???"));
+                }
+            }
+            default -> {
+                // Preserve the original Classic Spin layout and timing.
+                session.display.setItem(4, button(Items.NETHER_STAR, reveal ? "Recompensa castigatoare!" : "AbyssCrate - Se deschide..."));
+                for (int slot = 9; slot < 18; slot++) {
+                    RewardChoice candidate = reveal && slot == 13 ? session.prize : chooseReward(session.crate);
+                    session.display.setItem(slot, rewardIcon(candidate));
+                }
+                session.display.setItem(22, button(reveal ? Items.EMERALD : Items.CLOCK,
+                    reveal ? "Felicitari!" : "Asteapta rezultatul..."));
+            }
         }
     }
 
