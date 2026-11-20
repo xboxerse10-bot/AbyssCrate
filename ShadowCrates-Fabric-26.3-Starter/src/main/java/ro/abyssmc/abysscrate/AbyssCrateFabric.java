@@ -487,7 +487,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
 
-    // 3L: Text Display labels, managed by the server. Each placement has a stable unique tag.
+    // 3L.2: Text Display holograms. Text is a structured component in modern Minecraft.
     private static void refreshHolograms(net.minecraft.server.MinecraftServer server) {
         Map<String, String> snapshot = new HashMap<>();
         synchronized (PLACEMENTS) {
@@ -505,30 +505,33 @@ public final class AbyssCrateFabric implements ModInitializer {
                 String dim = parts[0];
                 if (!dim.matches("[a-z0-9_:.\\/-]+")) continue;
                 String tag = "abyss_h_" + Integer.toUnsignedString(entry.getKey().hashCode(), 36);
-                // Clear only displays belonging to this crate, including older 3L labels.
                 String center = (x + 0.5) + " " + (y + 1.75) + " " + (z + 0.5);
-                String base = "execute in " + dim + " positioned " + center + " run ";
-                runHologramCommand(server, base + "kill @e[type=minecraft:text_display,tag=" + tag + ",distance=..1.5]");
+                // Clean up both previous 3L displays and the new displays for this crate.
+                // Scoped to the placement: never delete other plugins' text displays.
+                runHologramCommand(server, "execute in " + dim + " positioned " + center
+                        + " run kill @e[type=minecraft:text_display,tag=abysscrate_hologram,distance=..3]");
                 if (!settingBool(entry.getValue(), "hologram", true)) continue;
                 String name = displayName(entry.getValue()).replaceAll("[^a-zA-Z0-9 _-]", "");
-                // Plain text avoids the SNBT/JSON component incompatibility in 26.3.
-                // Separate displays keep the rows properly spaced and centered.
                 String[] lines = {"✦ " + name + " ✦", "Right Click to Open", "Left Click to Preview"};
-                int[] colors = {0x00B7FF, 0xFFFFFF, 0xAAAAAA};
+                String[] colors = {"#00B7FF", "#FFFFFF", "#AAAAAA"};
                 double[] offsets = {0.28, 0.06, -0.16};
                 for (int line = 0; line < lines.length; line++) {
                     String label = lines[line].replace("\\", "\\\\").replace("\"", "\\\"");
                     String pos = (x + 0.5) + " " + (y + 1.75 + offsets[line]) + " " + (z + 0.5);
+                    // In 26.3 'text' is a component compound, not an escaped JSON string.
                     String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],"
                             + "billboard:\"center\",alignment:\"center\",see_through:1b,"
-                            + "background:0,text_color:" + colors[line] + ","
+                            + "background:0,shadow:1b,"
                             + "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],"
                             + "scale:[0.5f,0.5f,0.5f],right_rotation:[0f,0f,0f,1f]},"
-                            + "text:\"" + label + "\"}";
+                            + "text:{text:\"" + label + "\",color:\"" + colors[line] + "\",bold:"
+                            + (line == 0 ? "true" : "false") + "}}";
                     runHologramCommand(server, "execute in " + dim + " positioned " + pos
                             + " run summon minecraft:text_display ~ ~ ~ " + nbt);
                 }
-            } catch (RuntimeException ignored) { }
+            } catch (RuntimeException ex) {
+                System.err.println("[AbyssCrate] Hologram refresh failed: " + ex.getMessage());
+            }
         }
     }
 
