@@ -207,7 +207,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                 .then(Commands.literal("hologram")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
                     .then(Commands.argument("name", StringArgumentType.word())
-                        .then(Commands.argument("line", IntegerArgumentType.integer(1, 3))
+                        .then(Commands.argument("line", IntegerArgumentType.integer(1, 10))
                             .then(Commands.argument("text", StringArgumentType.greedyString())
                                 .executes(ctx -> {
                                     String crate = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
@@ -218,7 +218,18 @@ public final class AbyssCrateFabric implements ModInitializer {
                                             IntegerArgumentType.getInteger(ctx, "line"),
                                             StringArgumentType.getString(ctx, "text"));
                                     return 1;
-                                }))))));
+                                })))
+                        .then(Commands.literal("remove")
+                            .then(Commands.argument("removeLine", IntegerArgumentType.integer(1, 10))
+                                .executes(ctx -> {
+                                    String crate = StringArgumentType.getString(ctx, "name").toLowerCase(Locale.ROOT);
+                                    synchronized (CRATES) {
+                                        if (!CRATES.containsKey(crate)) { reply(ctx.getSource(), "not-found", crate); return 0; }
+                                    }
+                                    removeHologramLine(ctx.getSource().getPlayerOrException(), crate,
+                                            IntegerArgumentType.getInteger(ctx, "removeLine"));
+                                    return 1;
+                                })))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("editor")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
@@ -456,11 +467,26 @@ public final class AbyssCrateFabric implements ModInitializer {
         admin.sendSystemMessage(Component.literal("[AbyssCrate] Randul " + line + " salvat."));
     }
 
+    private static void removeHologramLine(ServerPlayer admin, String crate, int line) {
+        synchronized (HOLOGRAMS) {
+            String key = crate + ".line" + line;
+            // Blank marker also suppresses the default text on lines 1-3.
+            String previous = (String) HOLOGRAMS.setProperty(key, "");
+            try { saveHolograms(); hologramRefreshNeeded = true; }
+            catch (IOException ex) {
+                if (previous == null) HOLOGRAMS.remove(key); else HOLOGRAMS.setProperty(key, previous);
+                admin.sendSystemMessage(Component.literal("[AbyssCrate] Nu pot salva holograms.properties"));
+                return;
+            }
+        }
+        admin.sendSystemMessage(Component.literal("[AbyssCrate] Randul " + line + " a fost sters."));
+    }
+
     private static void openHologramEditor(ServerPlayer admin, String crate) {
         SimpleContainer view = new SimpleContainer(27);
         view.setItem(10, button(Items.NAME_TAG, "Line 1: /crate hologram " + crate + " 1 <text>"));
         view.setItem(11, button(Items.PAPER, "Line 2: /crate hologram " + crate + " 2 <text>"));
-        view.setItem(12, button(Items.PAPER, "Line 3: /crate hologram " + crate + " 3 <text>"));
+        view.setItem(12, button(Items.PAPER, "Lines 1-10: /crate hologram " + crate + " <1-10> <text>"));
         view.setItem(14, button(Items.ARROW, "Height: " + settingInt(crate, "hologram-height", 0) + " cm (click +10, right click -10)"));
         view.setItem(15, button(Items.SPYGLASS, "Scale: " + settingInt(crate, "hologram-scale", 50) + "% (click +10, right click -10)"));
         view.setItem(22, button(Items.BARRIER, "Back to Settings"));
@@ -724,23 +750,35 @@ public final class AbyssCrateFabric implements ModInitializer {
                         + " run kill @e[type=minecraft:text_display,tag=abysscrate_hologram,distance=..3]");
                 if (!settingBool(entry.getValue(), "hologram", true)) continue;
                 String crate = entry.getValue();
-                String[] lines = {
-                    hologramValue(crate, "line1", "&l✦ " + displayName(crate) + " ✦"),
-                    hologramValue(crate, "line2", "Right Click to Open"),
-                    hologramValue(crate, "line3", "Left Click to Preview")
+                String[] defaults = {
+                    "&l✦ " + displayName(crate) + " ✦",
+                    "Right Click to Open",
+                    "Left Click to Preview"
                 };
                 String[] colors = {"#00B7FF", "#FFFFFF", "#AAAAAA"};
-                double[] offsets = {0.28, 0.06, -0.16};
+                java.util.List<String> visibleLines = new java.util.ArrayList<>();
+                java.util.List<String> visibleColors = new java.util.ArrayList<>();
+                for (int lineNumber = 1; lineNumber <= 10; lineNumber++) {
+                    String fallback = lineNumber <= 3 ? defaults[lineNumber - 1] : "";
+                    String value = hologramValue(crate, "line" + lineNumber, fallback);
+                    if (!value.isBlank()) {
+                        visibleLines.add(value);
+                        visibleColors.add(lineNumber <= 3 ? colors[lineNumber - 1] : "#FFFFFF");
+                    }
+                }
                 double height = Math.max(-100, Math.min(200, settingInt(crate, "hologram-height", 0))) / 100.0;
                 float scale = Math.max(20, Math.min(150, settingInt(crate, "hologram-scale", 50))) / 100.0f;
-                for (int line = 0; line < lines.length; line++) {
-                    String pos = (x + 0.5) + " " + (y + 1.75 + offsets[line] + height) + " " + (z + 0.5);
+                // Keep the first line at the original height and stack later lines below it.
+                // Increase separation proportionally with the configured text scale.
+                double spacing = 0.44 * scale;
+                for (int line = 0; line < visibleLines.size(); line++) {
+                    String pos = (x + 0.5) + " " + (y + 1.75 + 0.28 + height - line * spacing) + " " + (z + 0.5);
                     String nbt = "{Tags:[\"abysscrate_hologram\",\"" + tag + "\"],"
                             + "billboard:\"center\",alignment:\"center\",see_through:1b,"
                             + "background:0,shadow:1b,"
                             + "transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],"
                             + "scale:[" + scale + "f," + scale + "f," + scale + "f],right_rotation:[0f,0f,0f,1f]},"
-                            + "text:" + hologramComponent(lines[line], colors[line]) + "}";
+                            + "text:" + hologramComponent(visibleLines.get(line), visibleColors.get(line)) + "}";
                     runHologramCommand(server, "execute in " + dim + " positioned " + pos
                             + " run summon minecraft:text_display ~ ~ ~ " + nbt);
                 }
