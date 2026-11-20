@@ -66,6 +66,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Path PLACEMENTS_FILE = DIR.resolve("placements.properties");
     private static final Path REWARDS_FILE = DIR.resolve("rewards.properties");
     private static final Properties REWARDS = new Properties();
+    private static final Path RARITIES_FILE = DIR.resolve("reward-rarities.properties");
+    private static final Properties RARITIES = new Properties();
     private static final Path SETTINGS_FILE = DIR.resolve("crate-settings.properties");
     private static final Properties SETTINGS = new Properties();
     private static final Path HOLOGRAMS_FILE = DIR.resolve("holograms.properties");
@@ -105,6 +107,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadMessages();
             loadPlacements();
             loadRewards();
+            loadRarities();
             loadSettings();
             loadHolograms();
             loadKeys();
@@ -439,6 +442,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadCrates();
                         loadPlacements();
                         loadRewards();
+                        loadRarities();
             loadSettings();
             loadHolograms();
             loadKeys();
@@ -752,6 +756,7 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(19, button(Items.OAK_SIGN, "Hologram Editor"));
         view.setItem(22, button(Items.ARROW, "Back"));
         view.setItem(23, button(Items.CLOCK, "Animation Style: " + animationStyle(crate) + " (click to cycle)"));
+        view.setItem(24, button(Items.TOTEM_OF_UNDYING, "Rare Reward Effects: " + (settingBool(crate, "rare-effects", true) ? "ON" : "OFF")));
         admin.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
                 if (slot >= 0 && slot < 27) {
@@ -778,6 +783,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         case 20 -> changeSetting(admin, crate, "hologram", Boolean.toString(!settingBool(crate, "hologram", true)));
                         case 19 -> openHologramEditor(admin, crate);
                         case 22 -> openMainEditor(admin, crate);
+                        case 24 -> changeSetting(admin, crate, "rare-effects", Boolean.toString(!settingBool(crate, "rare-effects", true)));
                         case 23 -> changeSetting(admin, crate, "animation_style", switch (animationStyle(crate)) {
                             case "CLASSIC" -> "ROULETTE";
                             case "ROULETTE" -> "EPIC";
@@ -837,6 +843,34 @@ public final class AbyssCrateFabric implements ModInitializer {
             runHologramCommand(server, "execute as " + name + " at @s run particle "
                     + effectParticle(crate) + " ~ ~1 ~ 0.35 0.5 0.35 0.04 16 force");
         }
+    }
+
+    private static String rarityMessage(String template, ServerPlayer player, String crate, String item, int count, String rarity) {
+        return template.replace("{prefix}", MESSAGES.getProperty("prefix", DEFAULT_GRADIENT_PREFIX))
+            .replace("{player}", player.getName().getString())
+            .replace("{crate}", crate).replace("{item}", item)
+            .replace("{amount}", Integer.toString(count)).replace("{rarity}", rarity);
+    }
+
+    private static void playRarityEffect(ServerPlayer player, String crate, String rarity) {
+        var server = player.level().getServer();
+        if (server == null) return;
+        String name = player.getGameProfile().name();
+        if (!name.matches("[A-Za-z0-9_]{1,16}")) return;
+        String particle = switch (rarity) {
+            case "RARE" -> "minecraft:happy_villager";
+            case "EPIC" -> "minecraft:witch";
+            case "LEGENDARY" -> "minecraft:end_rod";
+            default -> "minecraft:enchant";
+        };
+        String sound = switch (rarity) {
+            case "RARE" -> "minecraft:block.amethyst_block.chime";
+            case "EPIC" -> "minecraft:entity.evoker.cast_spell";
+            case "LEGENDARY" -> "minecraft:ui.toast.challenge_complete";
+            default -> "minecraft:entity.experience_orb.pickup";
+        };
+        if (settingBool(crate, "effects", true)) runHologramCommand(server, "execute as " + name + " at @s run particle " + particle + " ~ ~1 ~ 0.5 0.65 0.5 0.08 " + ("LEGENDARY".equals(rarity) ? 80 : 24) + " force");
+        if (settingBool(crate, "sounds", true)) runHologramCommand(server, "execute as " + name + " at @s run playsound " + sound + " master @s ~ ~ ~ 0.9 1");
     }
 
     private static void tickAmbientEffects(net.minecraft.server.MinecraftServer server) {
@@ -1010,6 +1044,53 @@ public final class AbyssCrateFabric implements ModInitializer {
         return ids;
     }
 
+    // 3Q.2: Rarity is separate from reward weights, so existing rewards stay compatible.
+    private static synchronized void loadRarities() throws IOException {
+        Files.createDirectories(DIR);
+        RARITIES.clear();
+        if (Files.exists(RARITIES_FILE)) try (InputStream in = Files.newInputStream(RARITIES_FILE)) { RARITIES.load(in); }
+    }
+
+    private static synchronized void saveRarities() throws IOException {
+        Files.createDirectories(DIR);
+        try (OutputStream out = Files.newOutputStream(RARITIES_FILE)) {
+            RARITIES.store(out, "AbyssCrate 3Q.2 manual reward rarities: COMMON, RARE, EPIC, LEGENDARY");
+        }
+    }
+
+    private static String rewardRarity(String crate, int id) {
+        synchronized (RARITIES) {
+            String value = RARITIES.getProperty(crate + "." + id, "COMMON").toUpperCase(Locale.ROOT);
+            return switch (value) {
+                case "RARE", "EPIC", "LEGENDARY" -> value;
+                default -> "COMMON";
+            };
+        }
+    }
+
+    private static String nextRarity(String current) {
+        return switch (current) {
+            case "COMMON" -> "RARE";
+            case "RARE" -> "EPIC";
+            case "EPIC" -> "LEGENDARY";
+            default -> "COMMON";
+        };
+    }
+
+    private static void changeRewardRarity(ServerPlayer admin, String crate, int id, int page) {
+        synchronized (RARITIES) {
+            String key = crate + "." + id;
+            String previous = RARITIES.getProperty(key);
+            RARITIES.setProperty(key, nextRarity(rewardRarity(crate, id)));
+            try { saveRarities(); }
+            catch (IOException ex) {
+                if (previous == null) RARITIES.remove(key); else RARITIES.setProperty(key, previous);
+                admin.sendSystemMessage(Component.literal("[AbyssCrate] Rarity save failed"));
+            }
+        }
+        openRewardDetails(admin, crate, id, page);
+    }
+
     private static ItemStack rewardIcon(String crate, int id) {
         String value;
         synchronized (REWARDS) { value = REWARDS.getProperty(crate + "." + id, ""); }
@@ -1064,17 +1145,29 @@ public final class AbyssCrateFabric implements ModInitializer {
         view.setItem(15, button(Items.EMERALD, "+1%"));
         view.setItem(16, button(Items.EMERALD, "+10%"));
         view.setItem(21, button(Items.LAVA_BUCKET, "Remove Reward"));
+        view.setItem(22, button(Items.NETHER_STAR, "Reward Rarity: " + rewardRarity(crate, id) + " (click to cycle)"));
         view.setItem(23, button(Items.ARROW, "Back"));
         admin.openMenu(new SimpleMenuProvider((sync, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, sync, inv, view, 3) {
             @Override public void clicked(int slot, int button, ContainerInput ContainerInput, Player player) {
                 if (slot >= 0 && slot < 27) {
                     if (slot == 23) { openRewardsEditor(admin, crate, page); return; }
+                    if (slot == 22) { changeRewardRarity(admin, crate, id, page); return; }
                     int delta = slot == 10 ? -10 : slot == 11 ? -1 : slot == 15 ? 1 : slot == 16 ? 10 : 0;
                     if (slot == 21 || delta != 0) {
                         synchronized (REWARDS) {
                             String existing = REWARDS.getProperty(key);
                             if (existing != null) {
-                                if (slot == 21) REWARDS.remove(key);
+                                if (slot == 21) {
+                                    REWARDS.remove(key);
+                                    synchronized (RARITIES) {
+                                        String oldRarity = (String) RARITIES.remove(key);
+                                        try { saveRarities(); }
+                                        catch (IOException ex) {
+                                            if (oldRarity != null) RARITIES.setProperty(key, oldRarity);
+                                            admin.sendSystemMessage(Component.literal("[AbyssCrate] Rarity cleanup save failed"));
+                                        }
+                                    }
+                                }
                                 else {
                                     String[] fields = existing.split("\\|");
                                     int adjusted = Math.max(0, Math.min(100, parseChance(fields) + delta));
@@ -1180,10 +1273,18 @@ public final class AbyssCrateFabric implements ModInitializer {
         }
         player.getInventory().getItem(keySlot).shrink(1);
         playCrateEffect(player, session.crate, "win");
+        String rarity = rewardRarity(session.crate, session.prize.id());
+        if (settingBool(session.crate, "rare-effects", true)) {
+            playRarityEffect(player, session.crate, rarity);
+        }
         String winText = message("reward-won", session.crate)
             .replace("{item}", displayName)
             .replace("{amount}", Integer.toString(session.prize.count()));
-        if (settingBool(session.crate, "broadcast", false)) {
+        if (settingBool(session.crate, "rare-effects", true) && "LEGENDARY".equals(rarity)) {
+            String template = MESSAGES.getProperty("rarity.legendary-broadcast", "{prefix}&#FFD700{player} a castigat o recompensa LEGENDARY: {amount} x {item} din {crate}!");
+            String announcement = rarityMessage(template, player, session.crate, displayName, session.prize.count(), rarity);
+            for (ServerPlayer online : player.level().getServer().getPlayerList().getPlayers()) online.sendSystemMessage(colored(announcement));
+        } else if (settingBool(session.crate, "broadcast", false)) {
             String broadcast = MESSAGES.getProperty("broadcast-win", "{prefix}Jucatorul {player} a castigat {amount} x {item} din crate-ul {crate}!")
                 .replace("{prefix}", MESSAGES.getProperty("prefix", DEFAULT_GRADIENT_PREFIX))
                 .replace("{player}", player.getName().getString())
@@ -1195,11 +1296,21 @@ public final class AbyssCrateFabric implements ModInitializer {
                 onlinePlayer.sendSystemMessage(announcement);
             }
         } else player.sendSystemMessage(colored(winText));
+        if (settingBool(session.crate, "rare-effects", true)) {
+            String defaultMessage = switch (rarity) {
+                case "RARE" -> "{prefix}&#55FF55Recompensa RARE obtinuta!";
+                case "EPIC" -> "{prefix}&#AA55FFRecompensa EPIC obtinuta!";
+                case "LEGENDARY" -> "{prefix}&#FFD700Recompensa LEGENDARY obtinuta!";
+                default -> "";
+            };
+            String template = MESSAGES.getProperty("rarity." + rarity.toLowerCase(Locale.ROOT) + "-win", defaultMessage);
+            if (!template.isEmpty()) player.sendSystemMessage(colored(rarityMessage(template, player, session.crate, displayName, session.prize.count(), rarity)));
+        }
     }
 
     // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
     // Zero-weight rewards cannot be selected. All-zero / missing rewards give nothing.
-    private record RewardChoice(Item item, int count, int weight) { }
+    private record RewardChoice(int id, Item item, int count, int weight) { }
 
     private static RewardChoice chooseReward(String crate) {
         List<RewardChoice> choices = new ArrayList<>();
@@ -1215,7 +1326,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                     int count = Integer.parseInt(parts[1]);
                     int weight = parseChance(parts);
                     if (count < 1 || count > 64 || weight <= 0) continue;
-                    choices.add(new RewardChoice(item, count, weight));
+                    choices.add(new RewardChoice(id, item, count, weight));
                     total += weight;
                 } catch (RuntimeException ignored) { }
             }
