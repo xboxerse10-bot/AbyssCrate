@@ -33,6 +33,10 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.InteractionResult;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.UUID;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -59,6 +63,20 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Path REWARDS_FILE = DIR.resolve("rewards.properties");
     private static final Properties REWARDS = new Properties();
     private static final String KEY_TAG = "shadowcrates_key_type";
+    private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
+    private static final int ANIMATION_TICKS = 100;
+    private static final int REVEAL_TICKS = 20;
+
+    private static final class MysterySession {
+        final String crate;
+        final RewardChoice prize;
+        final SimpleContainer display = new SimpleContainer(27);
+        int ticks;
+        MysterySession(String crate, RewardChoice prize) {
+            this.crate = crate;
+            this.prize = prize;
+        }
+    }
 
     @Override
     public void onInitialize() {
@@ -95,18 +113,49 @@ public final class AbyssCrateFabric implements ModInitializer {
                 player.sendSystemMessage(Component.literal(message("inventory-full", name)));
                 return InteractionResult.SUCCESS;
             }
-            ItemStack prize = new ItemStack(selected.item(), selected.count());
-            // Inventory.add can empty/mutate the input stack; capture the display name first.
-            String rewardDisplayName = prize.getHoverName().getString();
-            if (!serverPlayer.getInventory().add(prize)) {
-                player.sendSystemMessage(Component.literal(message("inventory-full", name)));
+            if (ACTIVE_OPENINGS.containsKey(serverPlayer.getUUID())) {
+                player.sendSystemMessage(Component.literal("[AbyssCrate] Ai deja un crate in curs de deschidere."));
                 return InteractionResult.SUCCESS;
             }
-            held.shrink(1);
-            player.sendSystemMessage(Component.literal(message("reward-won", name)
-                .replace("{item}", rewardDisplayName)
-                .replace("{amount}", Integer.toString(selected.count()))));
+            MysterySession session = new MysterySession(name, selected);
+            ACTIVE_OPENINGS.put(serverPlayer.getUUID(), session);
+            renderMystery(session, false);
+            serverPlayer.openMenu(new SimpleMenuProvider((id, inv, viewer) ->
+                new ChestMenu(MenuType.GENERIC_9x3, id, inv, session.display, 3) {
+                    @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                        // Prevent moving preview items out of the animated chest.
+                        if (slot >= 0 && slot < 27) return;
+                        super.clicked(slot, button, input, clicker);
+                    }
+                }, Component.literal("Mystery Crate | " + name)));
             return InteractionResult.SUCCESS;
+        });
+
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            var iterator = ACTIVE_OPENINGS.entrySet().iterator();
+            while (iterator.hasNext()) {
+                var entry = iterator.next();
+                ServerPlayer openingPlayer = server.getPlayerList().getPlayer(entry.getKey());
+                if (openingPlayer == null) {
+                    // No key was consumed, so a disconnect cancels safely.
+                    iterator.remove();
+                    continue;
+                }
+                MysterySession session = entry.getValue();
+                session.ticks++;
+                if (session.ticks <= ANIMATION_TICKS && session.ticks % animationInterval(session.ticks) == 0) {
+                    renderMystery(session, false);
+                    openingPlayer.containerMenu.broadcastChanges();
+                }
+                if (session.ticks == ANIMATION_TICKS + 1) {
+                    renderMystery(session, true);
+                    openingPlayer.containerMenu.broadcastChanges();
+                }
+                if (session.ticks >= ANIMATION_TICKS + REVEAL_TICKS) {
+                    finishMystery(openingPlayer, session);
+                    iterator.remove();
+                }
+            }
         });
 
         PlayerBlockBreakEvents.BEFORE.register((world, player, pos, state, blockEntity) -> {
@@ -440,6 +489,55 @@ public final class AbyssCrateFabric implements ModInitializer {
                 super.clicked(slot, button, ContainerInput, player);
             }
         }, Component.literal("Edit Reward #" + id)));
+    }
+
+    private static int animationInterval(int ticks) {
+        if (ticks < 40) return 3;
+        if (ticks < 70) return 5;
+        return 10;
+    }
+
+    private static void renderMystery(MysterySession session, boolean reveal) {
+        for (int slot = 0; slot < 27; slot++) session.display.setItem(slot, ItemStack.EMPTY);
+        session.display.setItem(4, button(Items.NETHER_STAR, reveal ? "Recompensa castigatoare!" : "Mystery Crate - Se deschide..."));
+        for (int slot = 9; slot < 18; slot++) {
+            RewardChoice candidate = reveal && slot == 13 ? session.prize : chooseReward(session.crate);
+            if (candidate != null) session.display.setItem(slot, new ItemStack(candidate.item(), candidate.count()));
+        }
+        if (reveal) {
+            session.display.setItem(22, button(Items.EMERALD, "Felicitari!"));
+        } else {
+            session.display.setItem(22, button(Items.CLOCK, "Asteapta rezultatul..."));
+        }
+    }
+
+    private static void finishMystery(ServerPlayer player, MysterySession session) {
+        // A key is taken only when the reward can actually be delivered.
+        if (!hasEmptyInventorySlot(player)) {
+            player.sendSystemMessage(Component.literal(message("inventory-full", session.crate)));
+            return;
+        }
+        int keySlot = -1;
+        for (int slot = 0; slot < 36; slot++) {
+            if (isKeyFor(player.getInventory().getItem(slot), session.crate)) {
+                keySlot = slot;
+                break;
+            }
+        }
+        if (keySlot == -1) {
+            player.sendSystemMessage(Component.literal(message("needs-key", session.crate)));
+            return;
+        }
+        ItemStack prize = new ItemStack(session.prize.item(), session.prize.count());
+        String displayName = prize.getHoverName().getString();
+        if (!player.getInventory().add(prize)) {
+            player.sendSystemMessage(Component.literal(message("inventory-full", session.crate)));
+            return;
+        }
+        player.getInventory().getItem(keySlot).shrink(1);
+        player.sendSystemMessage(Component.literal(message("reward-won", session.crate)
+            .replace("{item}", displayName)
+            .replace("{amount}", Integer.toString(session.prize.count()))));
     }
 
     // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
