@@ -66,6 +66,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Properties REWARDS = new Properties();
     private static final Path SETTINGS_FILE = DIR.resolve("crate-settings.properties");
     private static final Properties SETTINGS = new Properties();
+    private static final String DEFAULT_GRADIENT_PREFIX = "&#004FFF[&#005CFFA&#0067FFb&#0072FFy&#007CFFs&#0086FFs&#008FFFC&#0098FFr&#00A0FFa&#00A8FFt&#00B0FFe&#00B7FF]&r ";
     private static final String KEY_TAG = "shadowcrates_key_type";
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
     private static final int ANIMATION_TICKS = 100;
@@ -683,7 +684,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             .replace("{amount}", Integer.toString(session.prize.count()));
         if (settingBool(session.crate, "broadcast", false)) {
             String broadcast = MESSAGES.getProperty("broadcast-win", "{prefix}Jucatorul {player} a castigat {amount} x {item} din crate-ul {crate}!")
-                .replace("{prefix}", MESSAGES.getProperty("prefix", "[AbyssCrate] "))
+                .replace("{prefix}", MESSAGES.getProperty("prefix", DEFAULT_GRADIENT_PREFIX))
                 .replace("{player}", player.getName().getString())
                 .replace("{amount}", Integer.toString(session.prize.count()))
                 .replace("{item}", displayName)
@@ -878,7 +879,7 @@ public final class AbyssCrateFabric implements ModInitializer {
     }
 
     private static synchronized String message(String key, String value) {
-        return MESSAGES.getProperty("prefix", "[AbyssCrate] ") +
+        return MESSAGES.getProperty("prefix", DEFAULT_GRADIENT_PREFIX) +
             MESSAGES.getProperty(key, key).replace("{crate}", value).replace("{list}", value);
     }
 
@@ -904,7 +905,7 @@ public final class AbyssCrateFabric implements ModInitializer {
 
     private static synchronized void loadMessages() throws IOException {
         Properties defaults = new Properties();
-        defaults.setProperty("prefix", "[AbyssCrate] ");
+        defaults.setProperty("prefix", DEFAULT_GRADIENT_PREFIX);
         defaults.setProperty("broadcast-win", "{prefix}Jucatorul {player} a castigat {amount} x {item} din crate-ul {crate}!");
         defaults.setProperty("block-set", "Bloc asociat crate-ului {crate}.");
         defaults.setProperty("block-unset", "Blocul nu mai este un crate ({crate}).");
@@ -937,6 +938,20 @@ public final class AbyssCrateFabric implements ModInitializer {
         Properties next = new Properties(defaults);
         try (InputStream in = Files.newInputStream(MESSAGES_FILE)) {
             next.load(in);
+        }
+        // Upgrade only the original unformatted prefix; preserve all custom HEX/gradient prefixes.
+        String loadedPrefix = next.getProperty("prefix", DEFAULT_GRADIENT_PREFIX);
+        if (loadedPrefix.trim().equals("[AbyssCrate]")) {
+            next.setProperty("prefix", DEFAULT_GRADIENT_PREFIX);
+            // Persist migration so subsequent reloads and restarts use the same gradient.
+            Properties stored = new Properties();
+            try (InputStream in = Files.newInputStream(MESSAGES_FILE)) {
+                stored.load(in);
+            }
+            stored.setProperty("prefix", DEFAULT_GRADIENT_PREFIX);
+            try (OutputStream out = Files.newOutputStream(MESSAGES_FILE)) {
+                stored.store(out, "AbyssCrate messages - edit and use /crate reload");
+            }
         }
         synchronized (MESSAGES) {
             MESSAGES.clear();
