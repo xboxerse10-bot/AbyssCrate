@@ -96,13 +96,15 @@ public final class AbyssCrateFabric implements ModInitializer {
                 return InteractionResult.SUCCESS;
             }
             ItemStack prize = new ItemStack(selected.item(), selected.count());
+            // Inventory.add can empty/mutate the input stack; capture the display name first.
+            String rewardDisplayName = prize.getHoverName().getString();
             if (!serverPlayer.getInventory().add(prize)) {
                 player.sendSystemMessage(Component.literal(message("inventory-full", name)));
                 return InteractionResult.SUCCESS;
             }
             held.shrink(1);
             player.sendSystemMessage(Component.literal(message("reward-won", name)
-                .replace("{item}", prize.getHoverName().getString())
+                .replace("{item}", rewardDisplayName)
                 .replace("{amount}", Integer.toString(selected.count()))));
             return InteractionResult.SUCCESS;
         });
