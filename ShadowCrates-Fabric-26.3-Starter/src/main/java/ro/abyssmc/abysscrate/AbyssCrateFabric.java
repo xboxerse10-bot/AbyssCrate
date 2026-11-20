@@ -90,6 +90,10 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Properties KEYS = new Properties();
     private static final String KEY_TAG = "shadowcrates_key_type";
     private static final Map<UUID, MysterySession> ACTIVE_OPENINGS = new HashMap<>();
+    // 4G.1: pending invitations are kept server-side; never trust GUI inventory items.
+    private static final Map<UUID, BattleInvite> BATTLE_INVITES = new HashMap<>();
+    private static final long BATTLE_INVITE_TIMEOUT_MS = 60_000L;
+    private record BattleInvite(UUID challenger, UUID target, String crate, long expiresAt) { }
     private static final int ANIMATION_TICKS = 100;
     private static final int REVEAL_TICKS = 20;
     private static int effectsTick = 0;
@@ -134,6 +138,17 @@ public final class AbyssCrateFabric implements ModInitializer {
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
+
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(Commands.literal("crate").then(Commands.literal("battle")
+                .executes(ctx -> { openBattlePlayers(ctx.getSource().getPlayerOrException(), 0); return 1; })
+                .then(Commands.literal("invite").then(Commands.argument("player", EntityArgument.player())
+                    .executes(ctx -> { ServerPlayer inviter = ctx.getSource().getPlayerOrException();
+                        ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+                        openBattleCrates(inviter, target.getUUID(), 0); return 1; })))
+                .then(Commands.literal("accept").executes(ctx -> acceptBattle(ctx.getSource().getPlayerOrException())))
+                .then(Commands.literal("deny").executes(ctx -> denyBattle(ctx.getSource().getPlayerOrException())))));
+        });
 
         // 3O: Left-click opens the public preview; right-click remains key opening.
         AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
@@ -1949,6 +1964,220 @@ public final class AbyssCrateFabric implements ModInitializer {
         for (int i = 0; i < Math.min(27, crates.size()); i++) view.setItem(18 + i, button(Items.CHEST, crates.get(i) + " openings: " + stat("global.crate." + crates.get(i))));
         view.setItem(49, button(Items.GOLD_INGOT, "Open leaderboards"));
         showStatsMenu(viewer, "AbyssCrate | Admin Statistics", view, slot -> { if (slot == 49) openLeaderboard(viewer, false); });
+    }
+
+    // 4G.1: Battle selection, invitations and resolution.
+    private static int countBattleKeys(ServerPlayer player, String crate) {
+        int amount = 0;
+        for (int slot = 0; slot < 36; slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            if (isKeyFor(stack, crate)) amount += stack.getCount();
+        }
+        return amount;
+    }
+
+    private static List<String> battleCrates() {
+        List<String> crates = new ArrayList<>();
+        synchronized (CRATES) { for (String name : CRATES.stringPropertyNames()) crates.add(name); }
+        crates.sort(String::compareTo);
+        return crates;
+    }
+
+    private static void openBattlePlayers(ServerPlayer player, int page) {
+        List<ServerPlayer> online = new ArrayList<>();
+        for (ServerPlayer other : player.level().getServer().getPlayerList().getPlayers())
+            if (!other.getUUID().equals(player.getUUID())) online.add(other);
+        online.sort(Comparator.comparing(p -> p.getName().getString().toLowerCase(Locale.ROOT)));
+        int maxPage = Math.max(0, (online.size() - 1) / 45);
+        int current = Math.max(0, Math.min(page, maxPage));
+        SimpleContainer view = new SimpleContainer(54);
+        for (int i = 0; i < 45 && current * 45 + i < online.size(); i++) {
+            ServerPlayer other = online.get(current * 45 + i);
+            List<Component> lore = new ArrayList<>();
+            boolean compatible = false;
+            for (String crate : battleCrates()) {
+                int mine = countBattleKeys(player, crate), theirs = countBattleKeys(other, crate);
+                if (theirs > 0) lore.add(Component.literal(crate + ": " + theirs + " keys" + (mine > 0 ? " | YOU: " + mine : " | YOU: 0")));
+                if (mine > 0 && theirs > 0) compatible = true;
+            }
+            if (lore.isEmpty()) lore.add(Component.literal("No AbyssCrate keys"));
+            lore.add(Component.literal(compatible ? "Click to choose a shared crate" : "No matching keys"));
+            ItemStack icon = button(compatible ? Items.PLAYER_HEAD : Items.BARRIER, other.getName().getString());
+            icon.set(DataComponents.LORE, new ItemLore(lore));
+            view.setItem(i, icon);
+        }
+        view.setItem(45, button(Items.ARROW, "Previous page"));
+        view.setItem(49, button(Items.BARRIER, "Close"));
+        view.setItem(53, button(Items.ARROW, "Next page"));
+        showStatsMenu(player, "AbyssCrate | Battle Players", view, slot -> {
+            if (slot >= 0 && slot < 45 && current * 45 + slot < online.size())
+                openBattleCrates(player, online.get(current * 45 + slot).getUUID(), 0);
+            else if (slot == 45) openBattlePlayers(player, current - 1);
+            else if (slot == 49) player.closeContainer();
+            else if (slot == 53) openBattlePlayers(player, current + 1);
+        });
+    }
+
+    private static void openBattleCrates(ServerPlayer player, UUID targetId, int page) {
+        ServerPlayer target = player.level().getServer().getPlayerList().getPlayer(targetId);
+        if (target == null || targetId.equals(player.getUUID())) {
+            player.sendSystemMessage(Component.literal("[AbyssCrate] Player unavailable.")); return;
+        }
+        List<String> crates = battleCrates();
+        int maxPage = Math.max(0, (crates.size() - 1) / 45);
+        int current = Math.max(0, Math.min(page, maxPage));
+        SimpleContainer view = new SimpleContainer(54);
+        for (int i = 0; i < 45 && current * 45 + i < crates.size(); i++) {
+            String crate = crates.get(current * 45 + i);
+            int mine = countBattleKeys(player, crate), theirs = countBattleKeys(target, crate);
+            ItemStack icon = button(mine > 0 && theirs > 0 ? Items.CHEST : Items.BARRIER,
+                crate + " | You: " + mine + " | " + target.getName().getString() + ": " + theirs);
+            view.setItem(i, icon);
+        }
+        view.setItem(45, button(Items.ARROW, "Previous"));
+        view.setItem(49, button(Items.BARRIER, "Back"));
+        view.setItem(53, button(Items.ARROW, "Next"));
+        showStatsMenu(player, "Battle vs " + target.getName().getString(), view, slot -> {
+            if (slot >= 0 && slot < 45 && current * 45 + slot < crates.size())
+                inviteBattle(player, targetId, crates.get(current * 45 + slot));
+            else if (slot == 45) openBattleCrates(player, targetId, current - 1);
+            else if (slot == 49) openBattlePlayers(player, 0);
+            else if (slot == 53) openBattleCrates(player, targetId, current + 1);
+        });
+    }
+
+    private static void inviteBattle(ServerPlayer challenger, UUID targetId, String crate) {
+        ServerPlayer target = challenger.level().getServer().getPlayerList().getPlayer(targetId);
+        if (target == null || targetId.equals(challenger.getUUID())) {
+            challenger.sendSystemMessage(Component.literal("[AbyssCrate] Player unavailable.")); return;
+        }
+        if (countBattleKeys(challenger, crate) < 1 || countBattleKeys(target, crate) < 1) {
+            challenger.sendSystemMessage(Component.literal("[AbyssCrate] Both players need a " + crate + " key.")); return;
+        }
+        if (ACTIVE_OPENINGS.containsKey(challenger.getUUID()) || ACTIVE_OPENINGS.containsKey(targetId)) {
+            challenger.sendSystemMessage(Component.literal("[AbyssCrate] A player is opening a crate.")); return;
+        }
+        BATTLE_INVITES.put(targetId, new BattleInvite(challenger.getUUID(), targetId, crate,
+            System.currentTimeMillis() + BATTLE_INVITE_TIMEOUT_MS));
+        challenger.closeContainer();
+        challenger.sendSystemMessage(Component.literal("[AbyssCrate] Invited " + target.getName().getString() + " to " + crate + " battle (60s)."));
+        target.sendSystemMessage(Component.literal("[AbyssCrate] " + challenger.getName().getString() + " invited you to a " + crate + " battle! /crate battle accept or /crate battle deny"));
+        openBattleInvitation(target, challenger.getName().getString(), crate);
+    }
+
+    private static void openBattleInvitation(ServerPlayer target, String challengerName, String crate) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(11, button(Items.LIME_WOOL, "ACCEPT " + crate + " vs " + challengerName));
+        view.setItem(15, button(Items.RED_WOOL, "DENY"));
+        target.openMenu(new SimpleMenuProvider((id, inv, viewer) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) {
+                    if (slot == 11) acceptBattle(target);
+                    else if (slot == 15) denyBattle(target);
+                    return;
+                }
+                super.clicked(slot, button, input, clicker);
+            }
+            @Override public ItemStack quickMoveStack(Player clicker, int slot) { return ItemStack.EMPTY; }
+        }, Component.literal("AbyssCrate | Battle Invite")));
+    }
+
+    private static int denyBattle(ServerPlayer target) {
+        BattleInvite invite = BATTLE_INVITES.remove(target.getUUID());
+        target.closeContainer();
+        target.sendSystemMessage(Component.literal("[AbyssCrate] Battle invitation declined."));
+        if (invite != null) {
+            ServerPlayer challenger = target.level().getServer().getPlayerList().getPlayer(invite.challenger());
+            if (challenger != null) challenger.sendSystemMessage(Component.literal("[AbyssCrate] Battle invitation declined."));
+        }
+        return 1;
+    }
+
+    private static int acceptBattle(ServerPlayer target) {
+        BattleInvite invite = BATTLE_INVITES.remove(target.getUUID());
+        if (invite == null || System.currentTimeMillis() > invite.expiresAt()) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] No active invitation (or it expired).")); return 0;
+        }
+        ServerPlayer challenger = target.level().getServer().getPlayerList().getPlayer(invite.challenger());
+        if (challenger == null || challenger.getUUID().equals(target.getUUID())) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] Challenger disconnected.")); return 0;
+        }
+        String crate = invite.crate();
+        if (ACTIVE_OPENINGS.containsKey(challenger.getUUID()) || ACTIVE_OPENINGS.containsKey(target.getUUID())) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] A player is already opening a crate.")); return 0;
+        }
+        if (countBattleKeys(challenger, crate) < 1 || countBattleKeys(target, crate) < 1) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] Both players must still have the same crate key.")); return 0;
+        }
+        RewardChoice first = chooseReward(crate), second = chooseReward(crate);
+        if (first == null || second == null) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] Crate has no valid rewards.")); return 0;
+        }
+        // The winner needs capacity for both drops. We do not consume either key otherwise.
+        boolean challengerWins = first.weight() < second.weight() ||
+            (first.weight() == second.weight() && ThreadLocalRandom.current().nextBoolean());
+        ServerPlayer winner = challengerWins ? challenger : target;
+        if (emptyBattleSlots(winner) < 2) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] Winner needs two empty inventory slots. Battle cancelled, no keys used."));
+            challenger.sendSystemMessage(Component.literal("[AbyssCrate] Battle cancelled: winner needs two empty inventory slots."));
+            return 0;
+        }
+        // One server tick, both inventories validated before consuming either key.
+        if (!takeBattleKey(challenger, crate) || !takeBattleKey(target, crate)) {
+            target.sendSystemMessage(Component.literal("[AbyssCrate] Battle cancelled: keys changed.")); return 0;
+        }
+        ItemStack prize1 = new ItemStack(first.item(), first.count());
+        ItemStack prize2 = new ItemStack(second.item(), second.count());
+        winner.getInventory().add(prize1);
+        winner.getInventory().add(prize2);
+        recordOpening(challenger, crate, first, first.item().getName().getString());
+        recordOpening(target, crate, second, second.item().getName().getString());
+        awardMilestones(challenger);
+        awardMilestones(target);
+        challenger.closeContainer(); target.closeContainer();
+        String result = "[AbyssCrate] " + challenger.getName().getString() + " (" + first.weight() + " weight) vs "
+            + target.getName().getString() + " (" + second.weight() + " weight). WINNER: " + winner.getName().getString()
+            + "! Won " + first.count() + "x " + first.item().getName().getString() + " + "
+            + second.count() + "x " + second.item().getName().getString() + ". Both earned +1 milestone point.";
+        challenger.sendSystemMessage(Component.literal(result));
+        target.sendSystemMessage(Component.literal(result));
+        openBattleResult(challenger, target.getName().getString(), crate, first, second, challengerWins);
+        openBattleResult(target, challenger.getName().getString(), crate, second, first, !challengerWins);
+        return 1;
+    }
+
+    private static void openBattleResult(ServerPlayer viewer, String opponent, String crate,
+                                         RewardChoice own, RewardChoice rival, boolean won) {
+        SimpleContainer view = new SimpleContainer(27);
+        view.setItem(11, button(own.item(), "YOUR DROP: " + own.count() + "x "
+            + own.item().getName().getString() + " | Weight: " + own.weight()));
+        view.setItem(15, button(rival.item(), "OPPONENT DROP: " + rival.count() + "x "
+            + rival.item().getName().getString() + " | Weight: " + rival.weight()));
+        view.setItem(4, button(won ? Items.NETHER_STAR : Items.BARRIER,
+            (won ? "VICTORY! Both rewards are yours" : "DEFEAT! Opponent won both rewards") + " | +1 Milestone"));
+        view.setItem(22, button(Items.BOOK, "Crate: " + crate + " | Opponent: " + opponent));
+        view.setItem(26, button(Items.OAK_DOOR, "Close"));
+        viewer.openMenu(new SimpleMenuProvider((id, inv, player) -> new ChestMenu(MenuType.GENERIC_9x3, id, inv, view, 3) {
+            @Override public void clicked(int slot, int button, ContainerInput input, Player clicker) {
+                if (slot >= 0 && slot < 27) { if (slot == 26) viewer.closeContainer(); return; }
+                super.clicked(slot, button, input, clicker);
+            }
+            @Override public ItemStack quickMoveStack(Player clicker, int slot) { return ItemStack.EMPTY; }
+        }, Component.literal("AbyssCrate | Battle Result")));
+    }
+
+    private static int emptyBattleSlots(ServerPlayer player) {
+        int count = 0;
+        for (int slot = 0; slot < 36; slot++) if (player.getInventory().getItem(slot).isEmpty()) count++;
+        return count;
+    }
+
+    private static boolean takeBattleKey(ServerPlayer player, String crate) {
+        for (int slot = 0; slot < 36; slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            if (isKeyFor(stack, crate)) { stack.shrink(1); return true; }
+        }
+        return false;
     }
 
     // Reward chances are relative weights: e.g. 10 and 30 => 25% / 75%.
