@@ -229,7 +229,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                                     removeHologramLine(ctx.getSource().getPlayerOrException(), crate,
                                             IntegerArgumentType.getInteger(ctx, "removeLine"));
                                     return 1;
-                                })))));
+                                }))))));
             dispatcher.register(Commands.literal("crate")
                 .then(Commands.literal("editor")
                     .requires(source -> source.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_ADMIN))
