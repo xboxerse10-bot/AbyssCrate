@@ -137,7 +137,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                                         for (int slot = 0; slot < 27; slot++) {
                                             ItemStack stack = inventory.removeItemNoUpdate(slot);
                                             if (!stack.isEmpty() && !closingPlayer.getInventory().add(stack)) {
-                                                closingPlayer.getInventory().placeItemBackInInventory(     stack,     net.minecraft.world.entity.player.Inventory.Prediction.ONLY_SERVER );
+                                                closingPlayer.getInventory().add(stack);
                                             }
                                         }
                                         super.removed(closingPlayer);
