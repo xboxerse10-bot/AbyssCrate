@@ -8,6 +8,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.inventory.ChestMenu;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.component.CustomData;
@@ -45,6 +48,8 @@ public final class AbyssCrateFabric implements ModInitializer {
     private static final Properties MESSAGES = new Properties();
     private static final Properties PLACEMENTS = new Properties();
     private static final Path PLACEMENTS_FILE = DIR.resolve("placements.properties");
+    private static final Path REWARDS_FILE = DIR.resolve("rewards.properties");
+    private static final Properties REWARDS = new Properties();
     private static final String KEY_TAG = "shadowcrates_key_type";
 
     @Override
@@ -53,6 +58,7 @@ public final class AbyssCrateFabric implements ModInitializer {
             loadCrates();
             loadMessages();
             loadPlacements();
+            loadRewards();
         } catch (IOException ex) {
             throw new IllegalStateException("AbyssCrate: configuratia nu a putut fi incarcata", ex);
         }
@@ -99,13 +105,44 @@ public final class AbyssCrateFabric implements ModInitializer {
                             ServerPlayer admin = ctx.getSource().getPlayerOrException();
                             SimpleContainer inventory = new SimpleContainer(27);
                             ItemStack info = new ItemStack(Items.PAPER);
-                            info.set(DataComponents.CUSTOM_NAME, Component.literal("Editor: " + name));
-                            inventory.setItem(13, info);
-                            ItemStack coming = new ItemStack(Items.BARRIER);
-                            coming.set(DataComponents.CUSTOM_NAME, Component.literal("Editarea recompenselor: in dezvoltare"));
-                            inventory.setItem(22, coming);
+                            info.set(DataComponents.CUSTOM_NAME, Component.literal("Pune un item in slotul de sub aceasta hartie, apoi inchide meniul"));
+                            inventory.setItem(4, info);
+                            ItemStack hint = new ItemStack(Items.BARRIER);
+                            hint.set(DataComponents.CUSTOM_NAME, Component.literal("Slot de adaugare: mijloc, randul 2 (slot 13)"));
+                            inventory.setItem(22, hint);
                             admin.openMenu(new SimpleMenuProvider(
-                                (syncId, playerInventory, player) -> ChestMenu.threeRows(syncId, playerInventory, inventory),
+                                (syncId, playerInventory, player) -> new ChestMenu(
+                                    net.minecraft.world.inventory.MenuType.GENERIC_9x3, syncId, playerInventory, inventory, 3) {
+                                    @Override
+                                    public void removed(Player closingPlayer) {
+                                        // Salvam copia itemului depus in slotul 13.
+                                        ItemStack reward = inventory.getItem(13).copy();
+                                        if (!reward.isEmpty()) {
+                                            try {
+                                                String itemId = BuiltInRegistries.ITEM.getKey(reward.getItem()).toString();
+                                                synchronized (REWARDS) {
+                                                    int next = 1;
+                                                    while (REWARDS.containsKey(name + "." + next)) next++;
+                                                    REWARDS.setProperty(name + "." + next, itemId + "|" + reward.getCount());
+                                                    saveRewards();
+                                                }
+                                                closingPlayer.sendSystemMessage(Component.literal("[AbyssCrate] Recompensa salvata pentru " + name + ": " + itemId + " x" + reward.getCount()));
+                                            } catch (IOException ex) {
+                                                closingPlayer.sendSystemMessage(Component.literal("[AbyssCrate] Eroare la salvarea recompensei."));
+                                            }
+                                        }
+                                        // Returnam itemele reale, ca editorul sa nu le piarda.
+                                        inventory.setItem(4, ItemStack.EMPTY);
+                                        inventory.setItem(22, ItemStack.EMPTY);
+                                        for (int slot = 0; slot < 27; slot++) {
+                                            ItemStack stack = inventory.removeItemNoUpdate(slot);
+                                            if (!stack.isEmpty() && !closingPlayer.getInventory().add(stack)) {
+                                                closingPlayer.drop(stack, false);
+                                            }
+                                        }
+                                        super.removed(closingPlayer);
+                                    }
+                                },
                                 Component.literal("AbyssCrate | " + name)));
                             return 1;
                         })))
@@ -239,6 +276,7 @@ public final class AbyssCrateFabric implements ModInitializer {
                         loadMessages();
                         loadCrates();
                         loadPlacements();
+                        loadRewards();
                         reply(ctx.getSource(), "reloaded", "");
                         return 1;
                     } catch (IOException ex) {
@@ -258,6 +296,23 @@ public final class AbyssCrateFabric implements ModInitializer {
                     return 1;
                 })));
         });
+    }
+
+    private static synchronized void loadRewards() throws IOException {
+        Files.createDirectories(DIR);
+        Properties next = new Properties();
+        if (Files.exists(REWARDS_FILE)) {
+            try (InputStream in = Files.newInputStream(REWARDS_FILE)) { next.load(in); }
+        }
+        REWARDS.clear();
+        REWARDS.putAll(next);
+    }
+
+    private static synchronized void saveRewards() throws IOException {
+        Files.createDirectories(DIR);
+        try (OutputStream out = Files.newOutputStream(REWARDS_FILE)) {
+            REWARDS.store(out, "AbyssCrate reward prototypes - itemId|count");
+        }
     }
 
     private static ItemStack createKey(String name, int amount) {
